@@ -63,16 +63,18 @@ fun FallbackImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop
 ) {
-    var model by androidx.compose.runtime.remember(primary, fallback) {
+    val modelState = androidx.compose.runtime.remember(primary, fallback) {
         androidx.compose.runtime.mutableStateOf(primary.ifBlank { fallback })
     }
     AsyncImage(
-        model = model,
+        model = modelState.value,
         contentDescription = contentDescription,
         contentScale = contentScale,
         modifier = modifier,
         onError = {
-            if (model != fallback && fallback.isNotBlank()) model = fallback
+            if (modelState.value != fallback && fallback.isNotBlank()) {
+                modelState.value = fallback
+            }
         }
     )
 }
