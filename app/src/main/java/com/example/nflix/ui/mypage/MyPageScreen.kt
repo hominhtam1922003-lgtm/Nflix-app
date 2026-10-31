@@ -74,6 +74,7 @@ fun MyPageScreen(
     val state by viewModel.state.collectAsState()
     var filterIndex by remember { mutableIntStateOf(0) }
     var showWatchLater by remember { mutableStateOf(false) }
+    var showFavoritesAll by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -89,6 +90,17 @@ fun MyPageScreen(
     }
 
     val favorites = state.favorites.filter { matchesFilter(it.item.family, filterIndex) }
+
+    if (showFavoritesAll) {
+        TitleGridScreen(
+            title = "Yêu thích",
+            items = favorites.map { it.item },
+            onBack = { showFavoritesAll = false },
+            onOpenTitle = onOpenTitle,
+            modifier = modifier
+        )
+        return
+    }
     val followingHeaderIndex = 1
     val favoritesHeaderIndex = followingHeaderIndex +
         (if (state.following.isNotEmpty()) 1 + state.following.size else 0)
@@ -157,7 +169,11 @@ fun MyPageScreen(
         }
 
         item {
-            SectionHeader("Yêu thích")
+            SectionHeader(
+                "Yêu thích",
+                actionLabel = "Xem tất cả",
+                onAction = { showFavoritesAll = true }
+            )
             FilterChips(
                 labels = FILTER_LABELS,
                 selectedIndex = filterIndex,

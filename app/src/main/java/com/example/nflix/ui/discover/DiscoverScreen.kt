@@ -63,12 +63,24 @@ fun DiscoverScreen(
     val state by viewModel.state.collectAsState()
     var genreRoute by remember { mutableStateOf<DiscoverViewModel.GenreDef?>(null) }
     var showRankingAll by remember { mutableStateOf(false) }
+    var showCompletedAll by remember { mutableStateOf(false) }
 
     if (showRankingAll) {
         TitleGridScreen(
             title = "Bảng xếp hạng tuần",
             items = state.ranking.take(20),
             onBack = { showRankingAll = false },
+            onOpenTitle = onOpenTitle,
+            modifier = modifier
+        )
+        return
+    }
+
+    if (showCompletedAll) {
+        TitleGridScreen(
+            title = "Hoàn thành — xem một lèo",
+            items = state.completed,
+            onBack = { showCompletedAll = false },
             onOpenTitle = onOpenTitle,
             modifier = modifier
         )
@@ -179,7 +191,11 @@ fun DiscoverScreen(
 
         if (state.completed.isNotEmpty()) {
             item {
-                SectionHeader("Hoàn thành — xem một lèo")
+                SectionHeader(
+                    "Hoàn thành — xem một lèo",
+                    actionLabel = "Xem tất cả",
+                    onAction = { showCompletedAll = true }
+                )
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)

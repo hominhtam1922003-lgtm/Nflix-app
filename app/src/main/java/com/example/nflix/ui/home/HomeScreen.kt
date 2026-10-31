@@ -27,6 +27,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +51,8 @@ import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.components.PosterCard
 import com.example.nflix.ui.components.SectionHeader
 import com.example.nflix.ui.components.UpdatedRow
+import com.example.nflix.ui.common.TitleGridScreen
+import com.example.nflix.ui.common.TitleListScreen
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
@@ -61,11 +66,60 @@ fun HomeScreen(
     viewModel: HomeViewModel,
     onOpenTitle: (TitleItem) -> Unit,
     onFamilyChip: (Family) -> Unit,
+    onPlayDirect: (TitleItem) -> Unit,
+    onResume: (TitleItem) -> Unit,
+    onGoSearch: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsState()
     val continueList = state.continueList
     val newList = state.newList
+    var showAll by remember { mutableStateOf<String?>(null) }
+
+    when (showAll) {
+        "continue" -> {
+            TitleGridScreen(
+                title = "Xem tiếp",
+                items = continueList.map { it.item },
+                onBack = { showAll = null },
+                onOpenTitle = { onResume(it) },
+                modifier = modifier
+            )
+            return
+        }
+        "new" -> {
+            TitleListScreen(
+                title = "Có tập mới",
+                items = newList.map { it.item },
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier,
+                newCountOf = { item -> newList.firstOrNull { it.item.id == item.id }?.newCount ?: 0 },
+                unitOf = { viewModel.unitOf(it) }
+            )
+            return
+        }
+        "suggested" -> {
+            TitleGridScreen(
+                title = "Gợi ý cho bạn",
+                items = state.suggestedList,
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
+        "latest" -> {
+            TitleListScreen(
+                title = "Mới nhất",
+                items = state.latestList,
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
+    }
 
     LazyColumn(modifier = modifier.fillMaxSize().background(NflixBackground)) {
         item {
@@ -75,8 +129,8 @@ fun HomeScreen(
             ) {
                 Text(
                     buildAnnotatedString {
-                        withStyle(SpanStyle(color = NflixViolet)) { append("N") }
-                        append("flix")
+                        append("Nf")
+                        withStyle(SpanStyle(color = NflixViolet)) { append("lix") }
                     },
                     color = Color.White,
                     fontSize = 24.sp,
@@ -88,13 +142,19 @@ fun HomeScreen(
                     contentDescription = "Tìm kiếm",
                     tint = Color.White,
                     modifier = Modifier.size(24.dp)
+                        .clickable { onGoSearch() }
+                        .padding(2.dp)
                 )
                 Spacer(Modifier.width(18.dp))
                 Icon(
-                    painter = painterResource(R.drawable.ic_bell_dot),
+                    painter = painterResource(
+                        if (newList.isNotEmpty()) R.drawable.ic_bell_dot else R.drawable.ic_bell
+                    ),
                     contentDescription = "Thông báo",
                     tint = Color.White,
                     modifier = Modifier.size(24.dp)
+                        .clickable { showAll = "new" }
+                        .padding(2.dp)
                 )
             }
         }
@@ -103,7 +163,7 @@ fun HomeScreen(
             item {
                 HeroCard(
                     item = hero,
-                    onWatchNow = { onOpenTitle(hero) },
+                    onWatchNow = { onPlayDirect(hero) },
                     onWatchLater = { viewModel.toggleWatchLater(hero) }
                 )
             }
@@ -130,7 +190,11 @@ fun HomeScreen(
             when (shelfKey) {
                 "continue" -> if (continueList.isNotEmpty()) {
                     Column {
-                        SectionHeader("Xem tiếp")
+                        SectionHeader(
+                            "Xem tiếp",
+                            actionLabel = "Xem tất cả",
+                            onAction = { showAll = "continue" }
+                        )
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -138,7 +202,7 @@ fun HomeScreen(
                             items(continueList, key = { it.item.id }) { entry ->
                                 PosterCard(
                                     item = entry.item,
-                                    onClick = { onOpenTitle(entry.item) },
+                                    onClick = { onResume(entry.item) },
                                     modifier = Modifier.width(140.dp),
                                     progressFraction = entry.progressFraction,
                                     progressLabel = entry.progressLabel
@@ -149,8 +213,12 @@ fun HomeScreen(
                 }
                 "new" -> if (newList.isNotEmpty()) {
                     Column {
-                        SectionHeader("Có tập mới")
-                        newList.forEach { entry ->
+                        SectionHeader(
+                            "Có tập mới",
+                            actionLabel = "Xem tất cả",
+                            onAction = { showAll = "new" }
+                        )
+                        newList.take(4).forEach { entry ->
                             NewEpisodeCard(
                                 entry = entry,
                                 unit = viewModel.unitOf(entry.item),
@@ -164,13 +232,19 @@ fun HomeScreen(
                         title = "Gợi ý cho bạn",
                         items = state.suggestedList,
                         onItemClick = onOpenTitle,
-                        modifier = Modifier.padding(top = 6.dp)
+                        modifier = Modifier.padding(top = 6.dp),
+                        actionLabel = "Xem tất cả",
+                        onAction = { showAll = "suggested" }
                     )
                 }
                 "latest" -> if (state.latestList.isNotEmpty()) {
                     Column {
-                        SectionHeader("Mới nhất")
-                        state.latestList.forEach { item ->
+                        SectionHeader(
+                            "Mới nhất",
+                            actionLabel = "Xem tất cả",
+                            onAction = { showAll = "latest" }
+                        )
+                        state.latestList.take(8).forEach { item ->
                             UpdatedRow(item = item, onClick = { onOpenTitle(item) })
                         }
                     }
@@ -269,12 +343,12 @@ private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -
                 maxLines = 2
             )
             val meta = listOf(
-                item.year.takeIf { it > 0 }?.toString().orEmpty(),
                 item.family.label,
-                item.quality,
+                item.latestLabel,
                 when (item.versionBadge) {
                     "TM" -> "Thuyết minh"
                     "VS" -> "Vietsub"
+                    "LT" -> "Lồng tiếng"
                     else -> ""
                 }
             ).filter { it.isNotBlank() }.joinToString(" · ")

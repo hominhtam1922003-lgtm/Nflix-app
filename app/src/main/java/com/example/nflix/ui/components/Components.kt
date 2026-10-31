@@ -86,6 +86,18 @@ fun HotBadge(modifier: Modifier = Modifier) {
     }
 }
 
+/** HOT pill on posters (design Màn 8/9): dark translucent bg, white text, top-start. */
+@Composable
+fun PosterHotBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .background(Color(0xC20D0D13), BadgeShape)
+            .padding(horizontal = 6.dp, vertical = 3.dp)
+    ) {
+        Text("HOT", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
 @Composable
 fun NewBadge(modifier: Modifier = Modifier) {
     Box(
@@ -133,23 +145,23 @@ fun PosterCard(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
-            QualityBadge(item.quality, Modifier.align(Alignment.TopStart).padding(6.dp))
             if (item.isHot) {
-                HotBadge(Modifier.align(Alignment.TopEnd).padding(6.dp))
+                PosterHotBadge(Modifier.align(Alignment.TopStart).padding(6.dp))
             } else {
-                VersionBadge(item.versionBadge, Modifier.align(Alignment.TopEnd).padding(6.dp))
+                QualityBadge(item.quality, Modifier.align(Alignment.TopStart).padding(6.dp))
             }
-            if (progressFraction != null) {
-                LinearProgressIndicator(
-                    progress = { progressFraction.coerceIn(0f, 1f) },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .height(3.dp),
-                    color = NflixViolet,
-                    trackColor = Color(0x55FFFFFF)
-                )
-            }
+            VersionBadge(item.versionBadge, Modifier.align(Alignment.TopEnd).padding(6.dp))
+        }
+        if (progressFraction != null) {
+            Spacer(Modifier.height(5.dp))
+            LinearProgressIndicator(
+                progress = { progressFraction.coerceIn(0f, 1f) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp),
+                color = NflixViolet,
+                trackColor = NflixSurfaceVariant
+            )
         }
         Spacer(Modifier.height(6.dp))
         Text(
@@ -157,12 +169,12 @@ fun PosterCard(
             color = NflixText,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
         val sub = progressLabel.ifBlank { item.latestLabel }
         if (sub.isNotBlank()) {
-            Text(sub, color = NflixTextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sub, color = NflixTextMuted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -199,11 +211,13 @@ fun PosterShelf(
     items: List<TitleItem>,
     onItemClick: (TitleItem) -> Unit,
     modifier: Modifier = Modifier,
-    cardWidth: Int = 112
+    cardWidth: Int = 112,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
 ) {
     if (items.isEmpty()) return
     Column(modifier = modifier) {
-        SectionHeader(title)
+        SectionHeader(title, actionLabel = actionLabel, onAction = onAction)
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -246,25 +260,41 @@ fun UpdatedRow(
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                item.name,
-                color = NflixText,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            val time = item.updatedLabel.ifBlank { TimeText.relative(item.updatedEpochSec) }
-            val sub = listOf(item.latestLabel, time).filter { it.isNotBlank() }.joinToString(" · ")
-            if (sub.isNotBlank()) {
-                Text(sub, color = NflixTextMuted, fontSize = 12.sp, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    item.name,
+                    color = NflixText,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (item.isNew) {
+                    Spacer(Modifier.width(6.dp))
+                    NewBadge()
+                }
+                if (item.isHot) {
+                    Spacer(Modifier.width(6.dp))
+                    HotBadge()
+                }
+            }
+            if (item.latestLabel.isNotBlank()) {
+                Text(item.latestLabel, color = NflixTextMuted, fontSize = 12.sp, maxLines = 1)
             }
         }
-        if (item.isNew) NewBadge()
-        if (item.isHot) HotBadge()
-        if (newCount > 0) {
+        val time = item.updatedLabel.ifBlank { TimeText.relative(item.updatedEpochSec) }
+        if (newCount > 0 || time.isNotBlank()) {
             Spacer(Modifier.width(8.dp))
-            PlusPill(newCount, unit)
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (newCount > 0) PlusPill(newCount, unit)
+                if (time.isNotBlank()) {
+                    Text(time, color = NflixTextMuted, fontSize = 11.sp, maxLines = 1)
+                }
+            }
         }
     }
 }

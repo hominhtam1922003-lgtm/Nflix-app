@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -116,6 +117,9 @@ private fun NflixShell() {
     val readChapter: (TitleItem, ChapterItem) -> Unit = { item, chapter ->
         readerRequest = item to chapter
     }
+    val shellScope = rememberCoroutineScope()
+    val app = context.applicationContext as NflixApp
+
     val resumeFromState: (TitleItem, UserStateEntity) -> Unit = { item, st ->
         when (item.family) {
             Family.TRUYEN, Family.MANHWA -> readerRequest = item to ChapterItem(
@@ -130,6 +134,50 @@ private fun NflixShell() {
                     putExtra(PlayerActivity.EXTRA_EPISODE_LABEL, st.lastUnitLabel)
                 }
                 context.startActivity(intent)
+            }
+        }
+    }
+
+    // Resume straight into Player/Reader at the saved position (Xem tiếp cards).
+    val resumeByItem: (TitleItem) -> Unit = { item ->
+        shellScope.launch {
+            val st = app.database.userStateDao().get(item.id)
+            if (st != null && st.lastUnitNumber > 0f) resumeFromState(item, st)
+            else openTitle(item)
+        }
+    }
+
+    // Hero "Xem ngay": resume if started, otherwise play the newest episode/chapter directly.
+    val playDirect: (TitleItem) -> Unit = { item ->
+        shellScope.launch {
+            val st = app.database.userStateDao().get(item.id)
+            if (st != null && st.lastUnitNumber > 0f) {
+                resumeFromState(item, st)
+                return@launch
+            }
+            try {
+                val detail = when (item.family) {
+                    Family.PHIM -> app.kkPhim.detail(item.slug)
+                    Family.DONGHUA -> app.hhKungfu.detail(item.slug)
+                    Family.MANHWA -> app.netTruyen.detail(item.slug)
+                    Family.TRUYEN -> app.truyenQq.detail(item.slug)
+                }
+                when (item.family) {
+                    Family.TRUYEN, Family.MANHWA -> {
+                        val chapter = detail.chapters.maxByOrNull { it.number }
+                        if (chapter != null) readChapter(item, chapter) else openTitle(item)
+                    }
+                    else -> {
+                        val server = detail.servers.maxByOrNull { g ->
+                            g.episodes.maxOfOrNull { it.number } ?: 0f
+                        } ?: detail.servers.firstOrNull()
+                        val episode = server?.episodes?.maxByOrNull { it.number }
+                        if (server != null && episode != null) playVideo(item, episode, server)
+                        else openTitle(item)
+                    }
+                }
+            } catch (e: Exception) {
+                openTitle(item)
             }
         }
     }
@@ -205,14 +253,18 @@ private fun NflixShell() {
                 selected == 0 && familyRoute != null -> FamilyScreen(
                     family = familyRoute!!,
                     onFamilyChange = { familyRoute = it },
-                    onOpenTitle = openTitle
+                    onOpenTitle = openTitle,
+                    onGoSearch = { selected = 2 }
                 )
                 selected == 0 -> {
                     val homeVm: HomeViewModel = viewModel()
                     HomeScreen(
                         viewModel = homeVm,
                         onOpenTitle = openTitle,
-                        onFamilyChip = { familyRoute = it }
+                        onFamilyChip = { familyRoute = it },
+                        onPlayDirect = playDirect,
+                        onResume = resumeByItem,
+                        onGoSearch = { selected = 2 }
                     )
                 }
                 selected == 1 -> DiscoverScreen(

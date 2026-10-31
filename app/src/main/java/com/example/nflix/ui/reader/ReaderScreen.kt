@@ -78,6 +78,7 @@ import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixGreen
 import com.example.nflix.ui.theme.NflixRed
 import com.example.nflix.ui.theme.NflixSurface
+import com.example.nflix.ui.theme.NflixSurfaceVariant
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
 import com.example.nflix.ui.theme.NflixVioletSoft
@@ -335,53 +336,67 @@ fun ReaderScreen(
                 }
             }
             Row(
-                modifier = Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-                    .background(NflixSurface)
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 val prev = viewModel.prevChapter()
                 val next = viewModel.nextChapter()
-                Text(
-                    "‹ Chap trước",
-                    color = if (prev != null) Color.White else NflixTextMuted,
-                    fontSize = 13.sp,
+                val pillShape = RoundedCornerShape(50)
+                Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(pillShape)
+                        .background(NflixSurfaceVariant)
                         .then(if (prev != null) Modifier.clickable { onOpenChapter(prev) } else Modifier)
-                        .padding(horizontal = 8.dp, vertical = 10.dp)
-                )
-                Spacer(Modifier.weight(1f))
-                Icon(
-                    painter = painterResource(R.drawable.ic_list),
-                    contentDescription = "Danh sách chap",
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                        .clip(CircleShape)
-                        .clickable { showDrawer = true }
-                        .padding(2.dp)
-                )
-                Spacer(Modifier.width(22.dp))
-                Icon(
-                    painter = painterResource(R.drawable.ic_gear),
-                    contentDescription = "Cài đặt đọc",
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                        .clip(CircleShape)
-                        .clickable { showSettings = true }
-                        .padding(2.dp)
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "Chap sau ›",
-                    color = if (next != null) Color.White else NflixTextMuted,
-                    fontSize = 13.sp,
+                        .padding(horizontal = 14.dp, vertical = 9.dp)
+                ) {
+                    Text(
+                        "‹ Chap trước",
+                        color = if (prev != null) Color.White else NflixTextMuted,
+                        fontSize = 13.sp
+                    )
+                }
+                Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(pillShape)
+                        .background(NflixSurfaceVariant)
+                        .clickable { showDrawer = true }
+                        .padding(horizontal = 13.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_list),
+                        contentDescription = "Danh sách chap",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(pillShape)
+                        .background(NflixSurfaceVariant)
+                        .clickable { showSettings = true }
+                        .padding(horizontal = 13.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_gear),
+                        contentDescription = "Cài đặt đọc",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(pillShape)
+                        .background(NflixSurfaceVariant)
                         .then(if (next != null) Modifier.clickable { onOpenChapter(next) } else Modifier)
-                        .padding(horizontal = 8.dp, vertical = 10.dp)
-                )
+                        .padding(horizontal = 14.dp, vertical = 9.dp)
+                ) {
+                    Text(
+                        "Chap sau ›",
+                        color = if (next != null) Color.White else NflixTextMuted,
+                        fontSize = 13.sp
+                    )
+                }
             }
         }
 

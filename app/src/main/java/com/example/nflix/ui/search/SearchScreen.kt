@@ -387,7 +387,7 @@ fun SearchScreen(
                         maxLines = 1,
                         modifier = Modifier.weight(1f)
                     )
-                    FamilyTag(item.family.name)
+                    FamilyTag(item.family.label)
                 }
             }
             item { Spacer(Modifier.height(20.dp)) }

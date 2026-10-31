@@ -6,9 +6,13 @@ import com.example.nflix.NflixApp
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
+import com.example.nflix.data.toItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -19,9 +23,13 @@ data class FamilyUiState(
     val contextIndex: Int = 0,
     val posters: List<TitleItem> = emptyList(),
     val rows: List<TitleItem> = emptyList(),
-    val secondPosters: List<TitleItem> = emptyList()
+    val secondPosters: List<TitleItem> = emptyList(),
+    val hasNew: Boolean = false,
+    val newEntries: List<Pair<TitleItem, Int>> = emptyList(),
+    val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList()
 )
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class FamilyViewModel(
     private val app: NflixApp,
     val family: Family
@@ -89,6 +97,44 @@ class FamilyViewModel(
     init {
         selectContext(0)
         if (family == Family.DONGHUA) loadDonghuaTrending()
+        collectFollowingNew()
+    }
+
+    /** Followed titles with unseen new episodes/chapters — drives the header bell. */
+    private fun collectFollowingNew() {
+        viewModelScope.launch {
+            app.database.userStateDao().following().flatMapLatest { states ->
+                val withNew = states.filter { it.newCount > 0 }
+                if (withNew.isEmpty()) flowOf(emptyList())
+                else app.database.titleDao().observeByIds(withNew.map { it.titleId }).map { titles ->
+                    val byId = titles.associateBy { it.id }
+                    withNew.mapNotNull { st ->
+                        byId[st.titleId]?.let { it.toItem() to st.newCount }
+                    }
+                }
+            }.collect { entries ->
+                _state.update { it.copy(hasNew = entries.isNotEmpty(), newEntries = entries) }
+            }
+        }
+    }
+
+    /** Whole-week Donghua broadcast schedule (7 day groups), loaded on demand. */
+    fun loadScheduleWeek() {
+        if (family != Family.DONGHUA || _state.value.scheduleWeek.isNotEmpty()) return
+        viewModelScope.launch {
+            val groups = DAY_KEYS.mapIndexed { i, key ->
+                val items = try {
+                    app.hhKungfu.schedule(key)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+                DAY_LABELS[i + 1] to items
+            }
+            app.database.titleDao().upsertAll(
+                groups.flatMap { it.second }.map { it.toEntity() }
+            )
+            _state.update { it.copy(scheduleWeek = groups) }
+        }
     }
 
     fun selectContext(index: Int) {
