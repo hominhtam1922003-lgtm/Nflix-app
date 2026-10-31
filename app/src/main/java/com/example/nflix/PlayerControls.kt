@@ -54,6 +54,7 @@ import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.player.PlayerUiState
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.detail.fmtNum
+import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixGreen
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted

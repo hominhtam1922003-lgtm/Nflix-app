@@ -102,7 +102,7 @@ fun HomeScreen(
         state.hero?.let { hero ->
             item {
                 HeroCard(
-                    hero = hero,
+                    item = hero,
                     onWatchNow = { onOpenTitle(hero) },
                     onWatchLater = { viewModel.toggleWatchLater(hero) }
                 )
