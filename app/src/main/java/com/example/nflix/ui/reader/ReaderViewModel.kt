@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
 import com.example.nflix.data.local.UserStateEntity
+import com.example.nflix.data.local.watchedSet
+import com.example.nflix.data.local.withWatched
 import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
@@ -99,15 +101,17 @@ class ReaderViewModel(
         val finished = page >= pageCount
         val total = _state.value.chapters.maxOfOrNull { it.number }?.toInt()
             ?: current.latestCount
-        val next = current.copy(
+        val newLatest = maxOf(current.latestCount, total)
+        val next = current.withWatched(chapter.number).copy(
             lastUnitLabel = chapter.label,
             lastUnitNumber = chapter.number,
             pageIndex = page,
             pageCount = pageCount,
             progressFraction = page.toFloat() / pageCount,
             finished = finished,
-            seenCount = if (finished) maxOf(current.seenCount, chapter.number.toInt()) else current.seenCount,
-            latestCount = maxOf(current.latestCount, total),
+            // Reading a followed title acknowledges the current latest count.
+            seenCount = if (current.following || current.notifyOn) newLatest else current.seenCount,
+            latestCount = newLatest,
             lastTouchedEpochSec = System.currentTimeMillis() / 1000
         )
         app.database.userStateDao().upsert(next)
@@ -152,10 +156,10 @@ class ReaderViewModel(
         return s.chapters.filter { it.number > cur.number }.minByOrNull { it.number }
     }
 
+    /** Only chapters actually opened in the reader count as read. */
     fun isRead(chapter: ChapterItem): Boolean {
         val st = _state.value.userState ?: return false
-        return chapter.number < st.lastUnitNumber ||
-            (chapter.number == st.lastUnitNumber && st.finished)
+        return st.watchedSet().contains(chapter.number)
     }
 
     fun isCurrent(chapter: ChapterItem): Boolean =

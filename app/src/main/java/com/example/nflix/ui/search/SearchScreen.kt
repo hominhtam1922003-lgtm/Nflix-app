@@ -130,7 +130,8 @@ fun SearchScreen(
 
     // Results page (poster grid + family filter chips)
     results?.let { resultList ->
-        val filterValues = listOf(null, Family.PHIM, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
+        androidx.activity.compose.BackHandler { results = null }
+        val filterValues = listOf(null, Family.PHIM, Family.ANIME, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
         val shown = resultList.filter {
             filterValues[resultsFilter] == null || it.family == filterValues[resultsFilter]
         }
@@ -162,7 +163,7 @@ fun SearchScreen(
                 )
             }
             FilterChips(
-                labels = listOf("Tất cả", "Phim", "Donghua", "Manhwa", "Truyện"),
+                labels = listOf("Tất cả", "Phim", "Anime", "Donghua", "Manhwa", "Truyện"),
                 selectedIndex = resultsFilter,
                 onSelect = { resultsFilter = it }
             )

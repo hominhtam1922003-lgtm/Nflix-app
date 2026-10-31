@@ -3,6 +3,7 @@ package com.example.nflix
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -157,7 +158,7 @@ private fun NflixShell() {
             }
             try {
                 val detail = when (item.family) {
-                    Family.PHIM -> app.kkPhim.detail(item.slug)
+                    Family.PHIM, Family.ANIME -> app.kkPhim.detail(item.slug)
                     Family.DONGHUA -> app.hhKungfu.detail(item.slug)
                     Family.MANHWA -> app.netTruyen.detail(item.slug)
                     Family.TRUYEN -> app.truyenQq.detail(item.slug)
@@ -183,8 +184,11 @@ private fun NflixShell() {
     }
 
     // Full-screen overlays first: reader sits above detail, detail above settings/tabs.
+    // System back steps down ONE layer at a time — it must never exit the app
+    // from inside a title/reader/settings (user report 2026-11-01).
     when {
         readerRequest != null -> {
+            BackHandler { readerRequest = null }
             val (item, chapter) = readerRequest!!
             ReaderScreen(
                 item = item,
@@ -195,6 +199,7 @@ private fun NflixShell() {
             return
         }
         detailItem != null -> {
+            BackHandler { detailItem = null }
             DetailScreen(
                 item = detailItem!!,
                 onBack = { detailItem = null },
@@ -204,10 +209,15 @@ private fun NflixShell() {
             return
         }
         settingsOpen -> {
+            BackHandler { settingsOpen = false }
             SettingsScreen(onBack = { settingsOpen = false })
             return
         }
     }
+
+    // Back inside the shell: family screen → Home, other tabs → Home tab.
+    BackHandler(enabled = familyRoute != null) { familyRoute = null }
+    BackHandler(enabled = familyRoute == null && selected != 0) { selected = 0 }
 
     Scaffold(
         containerColor = NflixBackground,

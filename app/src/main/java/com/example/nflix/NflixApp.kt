@@ -30,6 +30,7 @@ class NflixApp : Application(), ImageLoaderFactory {
 
     val database: NflixDatabase by lazy {
         Room.databaseBuilder(this, NflixDatabase::class.java, "nflix.db")
+            .addMigrations(com.example.nflix.data.local.MIGRATION_2_3)
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -96,6 +97,8 @@ class NflixApp : Application(), ImageLoaderFactory {
      */
     override fun newImageLoader(): ImageLoader {
         val client = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val req = chain.request()
                 val builder = req.newBuilder()

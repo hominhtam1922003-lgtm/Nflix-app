@@ -83,7 +83,7 @@ private fun timeLabel(epochSec: Long): String =
 
 private fun matchesFilter(family: Family, filterIndex: Int): Boolean = when (filterIndex) {
     0 -> true
-    1 -> family == Family.PHIM
+    1 -> family == Family.PHIM || family == Family.ANIME
     2 -> family == Family.DONGHUA
     3 -> family == Family.TRUYEN || family == Family.MANHWA
     else -> true

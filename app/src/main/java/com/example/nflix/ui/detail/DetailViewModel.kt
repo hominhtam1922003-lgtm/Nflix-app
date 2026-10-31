@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
 import com.example.nflix.data.local.UserStateEntity
+import com.example.nflix.data.local.watchedSet
 import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.Family
@@ -61,7 +62,7 @@ class DetailViewModel(
                     "nettruyen" -> app.netTruyen.detail(item.slug)
                     "truyenqq" -> app.truyenQq.detail(item.slug)
                     else -> when (item.family) {
-                        Family.PHIM -> app.kkPhim.detail(item.slug)
+                        Family.PHIM, Family.ANIME -> app.kkPhim.detail(item.slug)
                         Family.DONGHUA -> app.hhKungfu.detail(item.slug)
                         Family.MANHWA -> app.netTruyen.detail(item.slug)
                         Family.TRUYEN -> app.truyenQq.detail(item.slug)
@@ -73,6 +74,18 @@ class DetailViewModel(
                     .takeIf { it >= 0 } ?: 0
                 _state.update {
                     it.copy(loading = false, detail = detail, serverIndex = preferred)
+                }
+                // Opening the detail of a followed title acknowledges what's out:
+                // "+N mới" may only count units released AFTER this moment.
+                val total = totalUnits(detail)
+                val stNow = app.database.userStateDao().get(item.id)
+                if (stNow != null && (stNow.following || stNow.notifyOn) && total > 0) {
+                    val acked = stNow.copy(
+                        seenCount = maxOf(stNow.seenCount, total),
+                        latestCount = maxOf(stNow.latestCount, total)
+                    )
+                    app.database.userStateDao().upsert(acked)
+                    _state.update { it.copy(userState = acked) }
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false) }
@@ -107,9 +120,20 @@ class DetailViewModel(
         return if (_state.value.sortDesc) chunk.reversed() else chunk
     }
 
+    /** Only units the user actually opened in the player/reader count as watched. */
     fun isWatched(number: Float): Boolean {
         val st = _state.value.userState ?: return false
-        return number < st.lastUnitNumber || (number == st.lastUnitNumber && st.finished)
+        return st.watchedSet().contains(number)
+    }
+
+    /** Total units currently out, from the loaded detail. */
+    private fun totalUnits(detail: TitleDetail): Int {
+        val fromUnits = if (isComic) {
+            detail.chapters.maxOfOrNull { it.number }?.toInt() ?: 0
+        } else {
+            detail.servers.maxOfOrNull { srv -> srv.episodes.maxOfOrNull { it.number }?.toInt() ?: 0 } ?: 0
+        }
+        return maxOf(detail.totalCount, detail.item.episodeCount, fromUnits)
     }
 
     fun isCurrent(number: Float): Boolean {
@@ -183,8 +207,22 @@ class DetailViewModel(
 
     fun toggleFavorite() = mutateState { it.copy(favorite = !it.favorite) }
     fun toggleWatchLater() = mutateState { it.copy(watchLater = !it.watchLater) }
-    fun toggleBell() = mutateState {
-        val on = !it.notifyOn
-        it.copy(notifyOn = on, following = on)
+    fun toggleBell() {
+        // Baseline rule: following starts counting from what is already out NOW —
+        // existing episodes must never show up as "+N tập mới".
+        val total = _state.value.detail?.let { totalUnits(it) } ?: 0
+        mutateState {
+            val on = !it.notifyOn
+            if (on && total > 0) {
+                it.copy(
+                    notifyOn = true,
+                    following = true,
+                    seenCount = maxOf(it.seenCount, total),
+                    latestCount = maxOf(it.latestCount, total)
+                )
+            } else {
+                it.copy(notifyOn = on, following = on)
+            }
+        }
     }
 }

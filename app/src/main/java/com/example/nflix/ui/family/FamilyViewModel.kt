@@ -18,15 +18,30 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
 
+/** Phim-tab filter (Màn 6 redesign): kind + category + country + year. Empty/0 = all. */
+data class PhimFilter(
+    val kind: String = "phim-bo",
+    val category: String = "",
+    val country: String = "",
+    val year: Int = 0
+) {
+    val isDefault: Boolean
+        get() = kind == "phim-bo" && category.isEmpty() && country.isEmpty() && year == 0
+}
+
 data class FamilyUiState(
     val loading: Boolean = true,
     val contextIndex: Int = 0,
     val posters: List<TitleItem> = emptyList(),
     val rows: List<TitleItem> = emptyList(),
+    val rowsPage: Int = 1,
+    val rowsHasMore: Boolean = false,
+    val loadingMore: Boolean = false,
     val secondPosters: List<TitleItem> = emptyList(),
     val hasNew: Boolean = false,
     val newEntries: List<Pair<TitleItem, Int>> = emptyList(),
-    val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList()
+    val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList(),
+    val phimFilter: PhimFilter = PhimFilter()
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -39,11 +54,11 @@ class FamilyViewModel(
     val state: StateFlow<FamilyUiState> = _state.asStateFlow()
 
     companion object {
+        /** Phim kinds — "Hoạt hình" removed per user order 2026-11-01 (Anime is its own tab now). */
         val PHIM_KINDS = listOf(
             "Phim bộ" to "phim-bo",
             "Phim lẻ" to "phim-le",
-            "Chiếu rạp" to "chieu-rap",
-            "Hoạt hình" to "hoat-hinh"
+            "Chiếu rạp" to "chieu-rap"
         )
         /** label to NetTruyen genre slug; first entry = the whole Manhwa category. */
         val MANHWA_GENRES = listOf(
@@ -88,6 +103,7 @@ class FamilyViewModel(
 
         fun contextLabels(family: Family): List<String> = when (family) {
             Family.PHIM -> PHIM_KINDS.map { it.first }
+            Family.ANIME -> emptyList()
             Family.DONGHUA -> DAY_LABELS
             Family.MANHWA -> MANHWA_GENRES.map { it.first }
             Family.TRUYEN -> TRUYEN_GENRES.map { it.first }
@@ -95,8 +111,15 @@ class FamilyViewModel(
     }
 
     init {
-        selectContext(0)
-        if (family == Family.DONGHUA) loadDonghuaTrending()
+        when (family) {
+            Family.PHIM -> applyPhimFilter(PhimFilter())
+            Family.ANIME -> loadAnime()
+            else -> selectContext(0)
+        }
+        if (family == Family.DONGHUA) {
+            loadDonghuaTrending()
+            loadDonghuaRows()
+        }
         collectFollowingNew()
     }
 
@@ -143,14 +166,20 @@ class FamilyViewModel(
             try {
                 val (posters, rows) = when (family) {
                     Family.PHIM -> {
-                        val kind = PHIM_KINDS[index].second
+                        val kind = PHIM_KINDS.getOrNull(index)?.second ?: "phim-bo"
                         val list = if (kind == "chieu-rap") app.kkPhim.cinema()
                         else app.kkPhim.listByKind(kind)
                         list to list
                     }
+                    Family.ANIME -> {
+                        val list = app.kkPhim.anime(1)
+                        list to list
+                    }
                     Family.DONGHUA -> {
+                        // Day chips only change the schedule shelf; the
+                        // "Mới cập nhật" rows are loaded separately.
                         val list = app.hhKungfu.schedule(dayKey(index))
-                        list to emptyList()
+                        list to _state.value.rows
                     }
                     Family.MANHWA -> {
                         val slug = MANHWA_GENRES[index].second
@@ -162,15 +191,151 @@ class FamilyViewModel(
                     }
                     Family.TRUYEN -> {
                         val slug = TRUYEN_GENRES[index].second
-                        val list = if (slug.isEmpty()) app.truyenQq.latest() else app.truyenQq.byGenre(slug)
-                        list to list
+                        if (slug.isEmpty()) app.truyenQq.hot() to app.truyenQq.latest()
+                        else {
+                            val list = app.truyenQq.byGenre(slug)
+                            list to list
+                        }
                     }
                 }
                 app.database.titleDao().upsertAll((posters + rows).map { it.toEntity() })
-                _state.update { it.copy(loading = false, posters = posters, rows = rows) }
+                _state.update {
+                    // Donghua rows are owned by loadDonghuaRows/loadMoreRows —
+                    // a day-chip switch must not clobber them with a stale copy.
+                    if (family == Family.DONGHUA) {
+                        it.copy(loading = false, posters = posters)
+                    } else {
+                        it.copy(
+                            loading = false,
+                            posters = posters,
+                            rows = rows,
+                            rowsPage = 1,
+                            rowsHasMore = rowsHasMoreFor(index)
+                        )
+                    }
+                }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false) }
             }
+        }
+    }
+
+    /** Whether the current rows source has further pages to append. */
+    private fun rowsHasMoreFor(contextIndex: Int): Boolean = when (family) {
+        Family.TRUYEN -> TRUYEN_GENRES.getOrNull(contextIndex)?.second?.isNotEmpty() == true
+        else -> true
+    }
+
+    /** One page of the "Mới cập nhật" rows for the current context/filter. */
+    private suspend fun fetchRows(page: Int): List<TitleItem> {
+        val s = _state.value
+        return when (family) {
+            Family.PHIM -> {
+                val f = s.phimFilter
+                if (f.isDefault) app.kkPhim.latest(page)
+                else fetchPhim(f, page)
+            }
+            Family.ANIME -> app.kkPhim.anime(page)
+            Family.DONGHUA -> app.hhKungfu.latest(page)
+            Family.MANHWA -> {
+                val idx = s.contextIndex
+                if (idx == 0) app.netTruyen.latest(page)
+                else app.netTruyen.byGenre(MANHWA_GENRES[idx].second, page)
+            }
+            Family.TRUYEN -> {
+                val slug = TRUYEN_GENRES.getOrNull(s.contextIndex)?.second.orEmpty()
+                if (slug.isEmpty()) emptyList() else app.truyenQq.byGenre(slug, page)
+            }
+        }
+    }
+
+    /** Infinite scroll for the rows list: appends the next page when near the end. */
+    fun loadMoreRows() {
+        val s = _state.value
+        if (s.loadingMore || !s.rowsHasMore || s.rows.isEmpty()) return
+        _state.update { it.copy(loadingMore = true) }
+        viewModelScope.launch {
+            val nextPage = s.rowsPage + 1
+            val more = try {
+                fetchRows(nextPage)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            if (more.isNotEmpty()) {
+                app.database.titleDao().upsertAll(more.map { it.toEntity() })
+            }
+            _state.update {
+                it.copy(
+                    loadingMore = false,
+                    rows = (it.rows + more).distinctBy { d -> d.id },
+                    rowsPage = if (more.isNotEmpty()) nextPage else it.rowsPage,
+                    rowsHasMore = more.isNotEmpty()
+                )
+            }
+        }
+    }
+
+    private suspend fun fetchPhim(filter: PhimFilter, page: Int): List<TitleItem> =
+        if (filter.kind == "chieu-rap" && filter.category.isEmpty() &&
+            filter.country.isEmpty() && filter.year == 0
+        ) {
+            app.kkPhim.cinema(page)
+        } else {
+            app.kkPhim.listFiltered(
+                kind = filter.kind,
+                category = filter.category,
+                country = filter.country,
+                year = filter.year,
+                page = page
+            )
+        }
+
+    /** Phim tab: apply a new filter (from the "Thể loại" sheet) and reload both shelves. */
+    fun applyPhimFilter(filter: PhimFilter) {
+        _state.update { it.copy(phimFilter = filter, loading = true, rowsPage = 1) }
+        viewModelScope.launch {
+            try {
+                val posters = fetchPhim(filter, 1)
+                val rows = if (filter.isDefault) app.kkPhim.latest(1) else posters
+                app.database.titleDao().upsertAll((posters + rows).map { it.toEntity() })
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        posters = posters,
+                        rows = rows,
+                        rowsPage = 1,
+                        rowsHasMore = true
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false) }
+            }
+        }
+    }
+
+    private fun loadAnime() {
+        _state.update { it.copy(loading = true) }
+        viewModelScope.launch {
+            try {
+                val list = app.kkPhim.anime(1)
+                app.database.titleDao().upsertAll(list.map { it.toEntity() })
+                _state.update {
+                    it.copy(loading = false, posters = list, rows = list, rowsPage = 1, rowsHasMore = true)
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false) }
+            }
+        }
+    }
+
+    /** Donghua "Mới cập nhật" rows — independent of the day-chip schedule shelf. */
+    private fun loadDonghuaRows() {
+        viewModelScope.launch {
+            try {
+                val rows = app.hhKungfu.latest(1)
+                app.database.titleDao().upsertAll(rows.map { it.toEntity() })
+                _state.update { it.copy(rows = rows, rowsPage = 1, rowsHasMore = true) }
+            } catch (e: Exception) { /* shelf stays hidden */ }
         }
     }
 

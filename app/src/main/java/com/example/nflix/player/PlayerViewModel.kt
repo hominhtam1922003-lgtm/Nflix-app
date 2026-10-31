@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
 import com.example.nflix.data.local.UserStateEntity
+import com.example.nflix.data.local.watchedSet
+import com.example.nflix.data.local.withWatched
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleDetail
@@ -150,9 +152,10 @@ class PlayerViewModel(
         return episodes().filter { it.number > cur.number }.minByOrNull { it.number }
     }
 
+    /** Only episodes actually opened in the player count as watched. */
     fun isWatched(number: Float): Boolean {
         val st = _state.value.userState ?: return false
-        return number < st.lastUnitNumber || (number == st.lastUnitNumber && st.finished)
+        return st.watchedSet().contains(number)
     }
 
     fun saveProgress(positionMs: Long, durationMs: Long) {
@@ -167,15 +170,17 @@ class PlayerViewModel(
             val finished = positionMs >= durationMs * 0.95
             val total = s.detail?.servers?.maxOfOrNull { srv -> srv.episodes.size }
                 ?: current.latestCount
-            val next = current.copy(
+            val newLatest = maxOf(current.latestCount, total)
+            val next = current.withWatched(episode.number).copy(
                 lastUnitLabel = episode.label,
                 lastUnitNumber = episode.number,
                 positionMs = if (finished) 0 else positionMs,
                 durationMs = durationMs,
                 progressFraction = (positionMs.toFloat() / durationMs).coerceIn(0f, 1f),
                 finished = finished,
-                seenCount = if (finished) maxOf(current.seenCount, episode.number.toInt()) else current.seenCount,
-                latestCount = maxOf(current.latestCount, total),
+                // Watching a followed title acknowledges the current latest count.
+                seenCount = if (current.following || current.notifyOn) newLatest else current.seenCount,
+                latestCount = newLatest,
                 pageIndex = 0,
                 pageCount = 0,
                 lastTouchedEpochSec = System.currentTimeMillis() / 1000

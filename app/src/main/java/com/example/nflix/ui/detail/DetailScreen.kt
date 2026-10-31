@@ -64,7 +64,9 @@ import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.theme.NflixBackground
+import com.example.nflix.ui.theme.NflixBlue
 import com.example.nflix.ui.theme.NflixGreen
+import com.example.nflix.ui.theme.NflixPink
 import com.example.nflix.ui.theme.NflixRed
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
@@ -107,10 +109,10 @@ fun DetailScreen(
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             item {
                 Box(modifier = Modifier.fillMaxWidth().height(250.dp)) {
-                    AsyncImage(
-                        model = dispItem.thumbUrl.ifBlank { dispItem.posterUrl },
+                    com.example.nflix.ui.components.FallbackImage(
+                        primary = dispItem.thumbUrl,
+                        fallback = dispItem.posterUrl,
                         contentDescription = dispItem.name,
-                        contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
                     Box(
@@ -201,12 +203,14 @@ fun DetailScreen(
                             iconRes = R.drawable.ic_heart,
                             label = "Yêu thích",
                             active = st?.favorite == true,
+                            activeAccent = NflixPink,
                             modifier = Modifier.weight(1f)
                         ) { viewModel.toggleFavorite() }
                         ToggleTile(
                             iconRes = R.drawable.ic_bookmark,
                             label = "Xem sau",
                             active = st?.watchLater == true,
+                            activeAccent = NflixBlue,
                             modifier = Modifier.weight(1f)
                         ) { viewModel.toggleWatchLater() }
                         ToggleTile(
@@ -516,15 +520,16 @@ private fun ToggleTile(
     label: String,
     active: Boolean,
     modifier: Modifier = Modifier,
-    iconTint: Color = if (active) NflixViolet else Color.White,
+    activeAccent: Color = NflixViolet,
+    iconTint: Color = if (active) activeAccent else Color.White,
     onClick: () -> Unit
 ) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(if (active) NflixVioletSoft else NflixSurface)
+            .background(if (active) activeAccent.copy(alpha = 0.20f) else NflixSurface)
             .then(
-                if (active) Modifier.border(1.dp, NflixViolet, RoundedCornerShape(12.dp))
+                if (active) Modifier.border(1.dp, activeAccent, RoundedCornerShape(12.dp))
                 else Modifier
             )
             .clickable(onClick = onClick)

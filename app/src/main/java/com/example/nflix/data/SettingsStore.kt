@@ -27,7 +27,8 @@ data class AppSettings(
     val autoFallbackSource: Boolean = true,
     val adBlock: Boolean = true,
     val readerMode: String = "SCROLL",            // SCROLL | PAGE
-    val readerKeepScreenOn: Boolean = true
+    val readerKeepScreenOn: Boolean = true,
+    val readerAutoHideChrome: Boolean = true      // hide reader bars while reading; tap screen to show
 )
 
 class SettingsStore(context: Context) {
@@ -50,7 +51,8 @@ class SettingsStore(context: Context) {
             autoFallbackSource = p[AUTO_FALLBACK] ?: true,
             adBlock = p[AD_BLOCK] ?: true,
             readerMode = p[READER_MODE] ?: "SCROLL",
-            readerKeepScreenOn = p[READER_KEEP_ON] ?: true
+            readerKeepScreenOn = p[READER_KEEP_ON] ?: true,
+            readerAutoHideChrome = p[READER_AUTOHIDE] ?: true
         )
     }
 
@@ -108,6 +110,7 @@ class SettingsStore(context: Context) {
         val AD_BLOCK = booleanPreferencesKey("ad_block")
         val READER_MODE = stringPreferencesKey("reader_mode")
         val READER_KEEP_ON = booleanPreferencesKey("reader_keep_screen_on")
+        val READER_AUTOHIDE = booleanPreferencesKey("reader_autohide_chrome")
         val SEARCH_HISTORY = stringPreferencesKey("search_history")
     }
 }

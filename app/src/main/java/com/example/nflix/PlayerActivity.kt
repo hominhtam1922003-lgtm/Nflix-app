@@ -86,6 +86,7 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        hideSystemBars()
         val titleId = intent.getStringExtra(EXTRA_TITLE_ID).orEmpty()
         val episodeSlug = intent.getStringExtra(EXTRA_EPISODE_SLUG).orEmpty()
         val episodeNumber = intent.getFloatExtra(EXTRA_EPISODE_NUMBER, 0f)
@@ -105,6 +106,20 @@ class PlayerActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (pipEligible) enterPip()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
+    /** True fullscreen: no status/navigation bars eating the top of the video. */
+    private fun hideSystemBars() {
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior =
+            androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
     }
 
     fun enterPip() {

@@ -24,6 +24,9 @@ class TruyenQqSource(
 ) {
     companion object {
         const val SOURCE_ID = "truyenqq"
+        private val RESERVED_SLUGS = setOf(
+            "tim-kiem", "the-loai", "dang-nhap", "dang-ky", "truyen-hot", "contact"
+        )
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -64,30 +67,50 @@ class TruyenQqSource(
         href.trimEnd('/').substringAfterLast('/')
 
     /**
-     * Home page = latest updates. Each card links to /<slug> and shows the
-     * newest chapters with relative times; structure verified in the spec.
+     * Home page sections (markup re-verified live 2026-11-01 after the site
+     * changed its cards): the hot slider lives in #owl-slide, the latest
+     * updates in #contentstory. Both use div.item cards, but with different
+     * name sources — slider cards carry the real title in .caption h3 while
+     * their img alt is the SLUG; list cards carry it in h3.name a / img alt.
+     * Cover paths are RELATIVE (/media/book/...) and must be absolutized.
      */
-    suspend fun latest(): List<TitleItem> = parseCards(getDoc("/"))
+    suspend fun hot(): List<TitleItem> {
+        val doc = getDoc("/")
+        return parseCards(doc.selectFirst("#owl-slide") ?: doc)
+    }
 
-    /** Genre listing — same card structure as the home page. */
+    suspend fun latest(): List<TitleItem> {
+        val doc = getDoc("/")
+        return parseCards(doc.selectFirst("#contentstory") ?: doc)
+    }
+
+    /** Genre listing — same card structure as the home page.
+     *  The site only renders the listing when ?page= is present — even for page 1. */
     suspend fun byGenre(genreSlug: String, page: Int = 1): List<TitleItem> =
-        parseCards(getDoc("/the-loai/$genreSlug" + if (page > 1) "?page=$page" else ""))
+        parseCards(getDoc("/the-loai/$genreSlug?page=$page"))
 
-    private fun parseCards(doc: Document): List<TitleItem> {
+    private fun parseCards(scope: org.jsoup.nodes.Element): List<TitleItem> {
         val seen = LinkedHashMap<String, TitleItem>()
-        for (a in doc.select("a[href]")) {
-            val href = a.attr("href")
-            // Title links look like /<slug> (single segment, no "chapter", no known prefixes)
-            val slug = slugOf(href)
-            if (!href.startsWith("/") || href.contains("chapter") || slug.isBlank() ||
-                slug in setOf("tim-kiem", "the-loai", "dang-nhap", "dang-ky") || seen.containsKey(slug)
-            ) continue
-            val card = a.closest("li, .item, .list-item, div") ?: continue
-            val img = card.selectFirst("img")
-            val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }.orEmpty()
-            val name = img?.attr("alt")?.takeIf { it.isNotBlank() }
-                ?: a.text().trim()
-            if (name.isBlank() || !poster.contains("/media/book/")) continue
+        for (card in scope.select("div.item")) {
+            val anchor = card.select("a[href]").firstOrNull { a ->
+                val href = a.attr("href")
+                href.startsWith("/") && !href.contains("chapter") &&
+                    href.trimEnd('/').count { it == '/' } == 1
+            } ?: continue
+            val slug = slugOf(anchor.attr("href"))
+            if (slug.isBlank() || slug in RESERVED_SLUGS || seen.containsKey(slug)) continue
+            val img = card.selectFirst("img") ?: continue
+            // absUrl resolves the relative /media/book/... path against the host.
+            val poster = img.absUrl("data-src").ifBlank { img.absUrl("src") }
+            if (!poster.contains("/media/book/")) continue
+            val name = listOf(
+                card.selectFirst(".info h3 a")?.text(),
+                card.selectFirst("h3.name a")?.text(),
+                card.selectFirst(".caption h3")?.text(),
+                img.attr("alt").removeSuffix(" đọc online").trim(),
+                anchor.attr("title")
+            ).firstOrNull { !it.isNullOrBlank() && it != slug }?.trim().orEmpty()
+            if (name.isBlank()) continue
             val chapMatch = Regex("[Cc]hapter\\s+(\\d+(?:\\.\\d+)?)").find(card.text())
             val chapNum = chapMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
             seen[slug] = TitleItem(
@@ -99,7 +122,8 @@ class TruyenQqSource(
                 posterUrl = poster,
                 thumbUrl = poster,
                 latestLabel = if (chapNum > 0) "Chap ${formatNum(chapNum)}" else "",
-                episodeCount = chapNum.toInt()
+                episodeCount = chapNum.toInt(),
+                updatedLabel = card.selectFirst(".time")?.text()?.trim().orEmpty()
             )
         }
         return seen.values.toList()
@@ -140,7 +164,9 @@ class TruyenQqSource(
             latestLabel = if (total > 0) "Chap $total" else "",
             episodeCount = total
         )
+        val labelStatus = doc.selectFirst(".book-info .label-status")?.text()?.trim().orEmpty()
         val status = when {
+            labelStatus.isNotBlank() -> labelStatus
             desc.contains("Đang tiến hành", true) -> "Đang tiến hành"
             desc.contains("Hoàn thành", true) -> "Hoàn thành"
             else -> ""
@@ -154,7 +180,10 @@ class TruyenQqSource(
         val urls = mutableListOf<String>()
         for (img in doc.select("img[data-src]")) {
             val src = img.attr("data-src")
-            if (src.contains("cc3t.net") && src.endsWith(".jpg") && src !in urls) urls.add(src)
+            val lower = src.lowercase()
+            val isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+                lower.endsWith(".png") || lower.endsWith(".webp")
+            if (src.contains("cc3t.net") && isImage && src !in urls) urls.add(src)
         }
         return urls
     }
@@ -162,31 +191,8 @@ class TruyenQqSource(
     suspend fun search(keyword: String): List<TitleItem> {
         val q = java.net.URLEncoder.encode(keyword, "UTF-8")
         val doc = getDoc("/tim-kiem?s=$q")
-        val results = mutableListOf<TitleItem>()
-        val seen = mutableSetOf<String>()
-        for (a in doc.select("a[href]")) {
-            val href = a.attr("href")
-            val slug = slugOf(href)
-            if (!href.startsWith("/") || href.contains("chapter") || slug.isBlank() || slug in seen) continue
-            val img = a.selectFirst("img") ?: a.parent()?.selectFirst("img") ?: continue
-            val poster = img.attr("data-src").ifBlank { img.attr("src") }
-            if (!poster.contains("/media/book/")) continue
-            val name = img.attr("alt").ifBlank { a.text().trim() }
-            if (name.isBlank()) continue
-            seen.add(slug)
-            results.add(
-                TitleItem(
-                    id = "${Family.TRUYEN.name}:$SOURCE_ID:$slug",
-                    family = Family.TRUYEN,
-                    sourceId = SOURCE_ID,
-                    slug = slug,
-                    name = name,
-                    posterUrl = poster,
-                    thumbUrl = poster
-                )
-            )
-        }
-        return results
+        // Results live in .listing with the same div.item cards as the lists.
+        return parseCards(doc.selectFirst(".listing") ?: doc)
     }
 
     private fun formatNum(n: Float): String =

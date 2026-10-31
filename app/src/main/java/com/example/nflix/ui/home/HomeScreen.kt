@@ -58,8 +58,8 @@ import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
 
-private val FAMILY_CHIPS = listOf("Tất cả", "Phim", "Donghua", "Manhwa", "Truyện")
-private val FAMILY_VALUES = listOf(null, Family.PHIM, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
+private val FAMILY_CHIPS = listOf("Tất cả", "Phim", "Anime", "Donghua", "Manhwa", "Truyện")
+private val FAMILY_VALUES = listOf(null, Family.PHIM, Family.ANIME, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
 
 @Composable
 fun HomeScreen(
@@ -151,7 +151,7 @@ fun HomeScreen(
                         if (newList.isNotEmpty()) R.drawable.ic_bell_dot else R.drawable.ic_bell
                     ),
                     contentDescription = "Thông báo",
-                    tint = Color.White,
+                    tint = Color.Unspecified,
                     modifier = Modifier.size(24.dp)
                         .clickable { showAll = "new" }
                         .padding(2.dp)
@@ -159,12 +159,12 @@ fun HomeScreen(
             }
         }
 
-        state.hero?.let { hero ->
+        if (state.heroList.isNotEmpty()) {
             item {
-                HeroCard(
-                    item = hero,
-                    onWatchNow = { onPlayDirect(hero) },
-                    onWatchLater = { viewModel.toggleWatchLater(hero) }
+                HeroCarousel(
+                    items = state.heroList,
+                    onWatchNow = onPlayDirect,
+                    onWatchLater = { viewModel.toggleWatchLater(it) }
                 )
             }
         }
@@ -269,10 +269,10 @@ private fun NewEpisodeCard(entry: ShelfEntry, unit: String, onClick: () -> Unit)
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AsyncImage(
-            model = item.posterUrl.ifBlank { item.thumbUrl },
+        com.example.nflix.ui.components.FallbackImage(
+            primary = item.posterUrl,
+            fallback = item.thumbUrl,
             contentDescription = item.name,
-            contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(width = 46.dp, height = 62.dp)
                 .clip(RoundedCornerShape(8.dp))
@@ -295,6 +295,62 @@ private fun NewEpisodeCard(entry: ShelfEntry, unit: String, onClick: () -> Unit)
     }
 }
 
+/**
+ * "Đang thịnh hành" hero carousel: swipes through the trending titles and
+ * auto-advances every 3 s (pauses while the user is dragging).
+ */
+@Composable
+private fun HeroCarousel(
+    items: List<TitleItem>,
+    onWatchNow: (TitleItem) -> Unit,
+    onWatchLater: (TitleItem) -> Unit
+) {
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState { items.size }
+    androidx.compose.runtime.LaunchedEffect(items.size) {
+        if (items.size < 2) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(3000)
+            if (!pagerState.isScrollInProgress) {
+                val next = (pagerState.currentPage + 1) % items.size
+                pagerState.animateScrollToPage(next)
+            }
+        }
+    }
+    Box {
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth()
+        ) { page ->
+            val heroItem = items[page]
+            HeroCard(
+                item = heroItem,
+                onWatchNow = { onWatchNow(heroItem) },
+                onWatchLater = { onWatchLater(heroItem) }
+            )
+        }
+        if (items.size > 1) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 30.dp, bottom = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                items.indices.forEach { i ->
+                    Box(
+                        modifier = Modifier
+                            .size(if (i == pagerState.currentPage) 7.dp else 5.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                if (i == pagerState.currentPage) NflixViolet
+                                else Color(0x66FFFFFF)
+                            )
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -> Unit) {
     Box(
@@ -305,10 +361,10 @@ private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -
             .clip(RoundedCornerShape(18.dp))
             .background(NflixSurface)
     ) {
-        AsyncImage(
-            model = item.thumbUrl.ifBlank { item.posterUrl },
+        com.example.nflix.ui.components.FallbackImage(
+            primary = item.thumbUrl,
+            fallback = item.posterUrl,
             contentDescription = item.name,
-            contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
         Box(

@@ -55,6 +55,8 @@ data class UserStateEntity(
     // new-episode tracking for followed titles
     val seenCount: Int = 0,
     val latestCount: Int = 0,
+    // units the user ACTUALLY opened in player/reader, comma-separated numbers ("1,2,5.5,132")
+    val watchedUnits: String = "",
     // last time the user opened/watched/read this title (Activity screen)
     val lastTouchedEpochSec: Long = 0
 ) {
@@ -118,8 +120,27 @@ interface UserStateDao {
     suspend fun clearHistory()
 }
 
-@Database(entities = [TitleEntity::class, UserStateEntity::class], version = 2, exportSchema = false)
+@Database(entities = [TitleEntity::class, UserStateEntity::class], version = 3, exportSchema = false)
 abstract class NflixDatabase : RoomDatabase() {
     abstract fun titleDao(): TitleDao
     abstract fun userStateDao(): UserStateDao
 }
+
+/** v2 → v3: per-unit watched/read marks (only units actually opened count). */
+val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE user_states ADD COLUMN watchedUnits TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+/** Parse the stored "1,2,5.5" watched-units string. */
+fun parseWatchedUnits(raw: String): Set<Float> =
+    raw.split(",").mapNotNull { it.trim().toFloatOrNull() }.toSet()
+
+fun formatWatchedUnits(units: Set<Float>): String =
+    units.sorted().joinToString(",") { n -> if (n % 1f == 0f) n.toInt().toString() else n.toString() }
+
+fun UserStateEntity.watchedSet(): Set<Float> = parseWatchedUnits(watchedUnits)
+
+fun UserStateEntity.withWatched(number: Float): UserStateEntity =
+    copy(watchedUnits = formatWatchedUnits(watchedSet() + number))

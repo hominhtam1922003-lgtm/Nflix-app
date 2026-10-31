@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,8 +37,10 @@ fun TitleListScreen(
     onOpenTitle: (TitleItem) -> Unit,
     modifier: Modifier = Modifier,
     newCountOf: (TitleItem) -> Int = { 0 },
-    unitOf: (TitleItem) -> String = { "tập" }
+    unitOf: (TitleItem) -> String = { "tập" },
+    onLoadMore: (() -> Unit)? = null
 ) {
+    BackHandler(onBack = onBack)
     Column(modifier = modifier.fillMaxSize().background(NflixBackground)) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -77,6 +80,13 @@ fun TitleListScreen(
                         newCount = newCountOf(item),
                         unit = unitOf(item)
                     )
+                }
+                if (onLoadMore != null) {
+                    item(key = "load_more") {
+                        androidx.compose.runtime.LaunchedEffect(items.size) {
+                            onLoadMore()
+                        }
+                    }
                 }
             }
         }

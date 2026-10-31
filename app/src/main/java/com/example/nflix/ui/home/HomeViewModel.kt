@@ -29,6 +29,7 @@ data class ShelfEntry(
 data class HomeUiState(
     val loading: Boolean = true,
     val hero: TitleItem? = null,
+    val heroList: List<TitleItem> = emptyList(),
     val familyFilter: Family? = null,
     val continueList: List<ShelfEntry> = emptyList(),
     val newList: List<ShelfEntry> = emptyList(),
@@ -82,7 +83,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val trending = nflix.kkPhim.listByKind("phim-bo", page = 1, limit = 12)
                 db.titleDao().upsertAll(trending.map { it.toEntity() })
-                _state.update { it.copy(loading = false, hero = trending.firstOrNull()) }
+                _state.update {
+                    it.copy(loading = false, hero = trending.firstOrNull(), heroList = trending.take(8))
+                }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false) }
             }

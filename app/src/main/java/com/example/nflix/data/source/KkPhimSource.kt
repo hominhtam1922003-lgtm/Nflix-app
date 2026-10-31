@@ -25,6 +25,65 @@ class KkPhimSource(
         private const val BASE = "https://phimapi.com"
         private const val CDN = "https://phimimg.com"
 
+        /** Category (label to slug) for the Phim filter sheet — KKPhim /v1/api/the-loai, verified live 2026-11-01. */
+        val CATEGORIES = listOf(
+            "Hành động" to "hanh-dong",
+            "Tình cảm" to "tinh-cam",
+            "Hài hước" to "hai-huoc",
+            "Tâm lý" to "tam-ly",
+            "Hình sự" to "hinh-su",
+            "Chiến tranh" to "chien-tranh",
+            "Phiêu lưu" to "phieu-luu",
+            "Võ thuật" to "vo-thuat",
+            "Cổ trang" to "co-trang",
+            "Kinh dị" to "kinh-di",
+            "Viễn tưởng" to "vien-tuong",
+            "Khoa học" to "khoa-hoc",
+            "Thần thoại" to "than-thoai",
+            "Học đường" to "hoc-duong",
+            "Gia đình" to "gia-dinh",
+            "Bí ẩn" to "bi-an",
+            "Kinh điển" to "kinh-dien",
+            "Chính kịch" to "chinh-kich",
+            "Lịch sử" to "lich-su",
+            "Miền Tây" to "mien-tay",
+            "Thể thao" to "the-thao",
+            "Trẻ em" to "tre-em",
+            "Âm nhạc" to "am-nhac",
+            "Tài liệu" to "tai-lieu",
+            "Phim ngắn" to "phim-ngan",
+            "Phim 18+" to "phim-18"
+        )
+
+        /** Country (label to slug) for the Phim filter sheet — KKPhim /v1/api/quoc-gia, verified live 2026-11-01. */
+        val COUNTRIES = listOf(
+            "Hàn Quốc" to "han-quoc",
+            "Trung Quốc" to "trung-quoc",
+            "Nhật Bản" to "nhat-ban",
+            "Âu Mỹ" to "au-my",
+            "Việt Nam" to "viet-nam",
+            "Thái Lan" to "thai-lan",
+            "Đài Loan" to "dai-loan",
+            "Hồng Kông" to "hong-kong",
+            "Anh" to "anh",
+            "Pháp" to "phap",
+            "Đức" to "duc",
+            "Ấn Độ" to "an-do",
+            "Indonesia" to "indonesia",
+            "Philippines" to "philippines",
+            "Malaysia" to "malaysia",
+            "Canada" to "canada",
+            "Úc" to "uc",
+            "Tây Ban Nha" to "tay-ban-nha",
+            "Ý" to "y",
+            "Nga" to "nga",
+            "Brazil" to "brazil",
+            "Mexico" to "mexico",
+            "Thổ Nhĩ Kỳ" to "tho-nhi-ky",
+            "Hà Lan" to "ha-lan",
+            "Quốc gia khác" to "quoc-gia-khac"
+        )
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -50,6 +109,8 @@ class KkPhimSource(
     private fun imageUrl(raw: String): String = when {
         raw.isBlank() -> ""
         raw.startsWith("http") -> raw
+        // TMDB image fragments (t/p/w780/...) live on image.tmdb.org, not phimimg.
+        raw.startsWith("t/p/") -> "https://image.tmdb.org/${raw.trimStart('/')}"
         else -> "$CDN/${raw.trimStart('/')}"
     }
 
@@ -76,22 +137,42 @@ class KkPhimSource(
         }
     }
 
+    /**
+     * Anime = KKPhim type "hoathinh" AND Japanese origin (verified live:
+     * the type field is reliable, the category list is not — some animation
+     * titles carry no hoat-hinh category). Chinese animation (donghua)
+     * stays PHIM here — the Donghua tab is served by HHKungfu.
+     */
+    private fun familyOf(item: JSONObject): Family {
+        if (item.optString("type") != "hoathinh") return Family.PHIM
+        val countries = item.optJSONArray("country") ?: return Family.PHIM
+        for (i in 0 until countries.length()) {
+            if (countries.optJSONObject(i)?.optString("slug") == "nhat-ban") return Family.ANIME
+        }
+        return Family.PHIM
+    }
+
     private fun parseItem(item: JSONObject): TitleItem {
         val slug = item.optString("slug")
+        val family = familyOf(item)
         val epCurrent = item.optString("episode_current")
         val epNum = Regex("\\d+").find(epCurrent)?.value?.toIntOrNull() ?: 0
         val genres = mutableListOf<String>()
         val cats = item.optJSONArray("category") ?: JSONArray()
         for (i in 0 until cats.length()) cats.optJSONObject(i)?.optString("name")?.let { genres.add(it) }
+        // Cross-fallback: ~3% of titles ship an empty thumb (or poster) — a
+        // blank field must never reach the UI when the sibling image exists.
+        val poster = imageUrl(item.optString("poster_url"))
+        val thumb = imageUrl(item.optString("thumb_url"))
         return TitleItem(
-            id = "${Family.PHIM.name}:$SOURCE_ID:$slug",
-            family = Family.PHIM,
+            id = "${family.name}:$SOURCE_ID:$slug",
+            family = family,
             sourceId = SOURCE_ID,
             slug = slug,
             name = item.optString("name"),
             originName = item.optString("origin_name"),
-            posterUrl = imageUrl(item.optString("poster_url")),
-            thumbUrl = imageUrl(item.optString("thumb_url")),
+            posterUrl = poster.ifBlank { thumb },
+            thumbUrl = thumb.ifBlank { poster },
             quality = item.optString("quality"),
             versionBadge = versionBadge(item),
             latestLabel = epCurrent,
@@ -121,6 +202,36 @@ class KkPhimSource(
         val root = getJson("$BASE/v1/api/danh-sach/$kind?page=$page&limit=$limit")
         return parseList(root)
     }
+
+    /**
+     * Filtered listing for the Phim tab's "Thể loại" sheet. Empty category /
+     * country and year 0 mean "all". "chieu-rap" is a flag on phim-le, so it
+     * maps to the phim-le list (the flag itself is applied by cinema()).
+     */
+    suspend fun listFiltered(
+        kind: String,
+        category: String = "",
+        country: String = "",
+        year: Int = 0,
+        page: Int = 1,
+        limit: Int = 24
+    ): List<TitleItem> {
+        val effectiveKind = if (kind == "chieu-rap") "phim-le" else kind
+        val params = StringBuilder("?page=$page&limit=$limit")
+        if (category.isNotEmpty()) params.append("&category=$category")
+        if (country.isNotEmpty()) params.append("&country=$country")
+        if (year > 0) params.append("&year=$year")
+        val root = getJson("$BASE/v1/api/danh-sach/$effectiveKind$params")
+        return parseList(root)
+    }
+
+    /**
+     * Anime tab: Japanese animation only, filtered SERVER-side via the
+     * country param on the hoat-hinh list (verified live: 1,700 JP titles;
+     * Chinese titles stay out — donghua lives in the Donghua tab).
+     */
+    suspend fun anime(page: Int = 1): List<TitleItem> =
+        listFiltered(kind = "hoat-hinh", country = "nhat-ban", page = page)
 
     suspend fun cinema(page: Int = 1, limit: Int = 24): List<TitleItem> {
         // Chiếu rạp has no dedicated endpoint: filter phim-le by the chieurap flag.

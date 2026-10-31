@@ -2,6 +2,7 @@ package com.example.nflix.data.model
 
 enum class Family(val label: String) {
     PHIM("Phim"),
+    ANIME("Anime"),
     DONGHUA("Donghua"),
     MANHWA("Manhwa"),
     TRUYEN("Truyện")

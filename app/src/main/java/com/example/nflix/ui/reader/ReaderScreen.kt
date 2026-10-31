@@ -108,6 +108,26 @@ fun ReaderScreen(
     var scrubPage by remember { mutableStateOf<Float?>(null) }
     var brightness by remember { mutableStateOf<Float?>(null) }
 
+    // Reader chrome (top + bottom bars): hidden while reading when the
+    // auto-hide setting is on; tapping a page toggles it back.
+    var chromeShown by remember { mutableStateOf(false) }
+    LaunchedEffect(settings.readerAutoHideChrome) {
+        chromeShown = !settings.readerAutoHideChrome
+    }
+    LaunchedEffect(chromeShown, showDrawer, showSettings) {
+        if (settings.readerAutoHideChrome && chromeShown && !showDrawer && !showSettings) {
+            kotlinx.coroutines.delay(3000)
+            chromeShown = false
+        }
+    }
+    val toggleChrome: () -> Unit = {
+        if (settings.readerAutoHideChrome) chromeShown = !chromeShown
+    }
+    val tapToggle = Modifier.clickable(
+        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+        indication = null
+    ) { toggleChrome() }
+
     val totalPages = state.pages.size
     val displayPage = (scrubPage?.toInt() ?: state.currentPage).coerceIn(1, maxOf(1, totalPages))
 
@@ -198,7 +218,7 @@ fun ReaderScreen(
                     model = state.pages[page],
                     contentDescription = "Trang ${page + 1}",
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().then(tapToggle)
                 )
             }
             else -> LazyColumn(
@@ -211,7 +231,7 @@ fun ReaderScreen(
                         model = url,
                         contentDescription = null,
                         contentScale = ContentScale.FillWidth,
-                        modifier = Modifier.fillMaxWidth().background(Color(0xFF101016))
+                        modifier = Modifier.fillMaxWidth().background(Color(0xFF101016)).then(tapToggle)
                     )
                 }
                 viewModel.nextChapter()?.let { next ->
@@ -237,7 +257,8 @@ fun ReaderScreen(
             }
         }
 
-        // Top bar (floating)
+        // Top bar (floating) — part of the toggleable chrome.
+        if (chromeShown) {
         Box(
             modifier = Modifier.fillMaxWidth()
                 .background(
@@ -293,20 +314,11 @@ fun ReaderScreen(
                 }
             }
         }
-
-        // Page pill (right, middle)
-        if (totalPages > 0) {
-            Box(
-                modifier = Modifier.align(Alignment.CenterEnd)
-                    .padding(end = 10.dp)
-                    .background(Color(0xB3000000), RoundedCornerShape(50))
-                    .padding(horizontal = 10.dp, vertical = 5.dp)
-            ) {
-                Text("Trang $displayPage/$totalPages", color = Color.White, fontSize = 12.sp)
-            }
         }
 
-        // Bottom: page progress + chapter controls
+        // Bottom: page progress + chapter controls (toggleable chrome too).
+        // The right-side page pill is gone — the bottom slider already counts pages.
+        if (chromeShown) {
         Column(
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
@@ -398,6 +410,7 @@ fun ReaderScreen(
                     )
                 }
             }
+        }
         }
 
         if (reportNote) {
@@ -695,6 +708,20 @@ private fun ReaderSettingsSheet(
                     checked = settings.readerKeepScreenOn,
                     onCheckedChange = { on ->
                         scope.launch { app.settings.set(SettingsStore.READER_KEEP_ON, on) }
+                    },
+                    colors = SwitchDefaults.colors(checkedTrackColor = NflixViolet)
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Tự ẩn thanh công cụ", color = Color.White, fontSize = 14.sp)
+                    Text("Chạm vào màn hình để hiện lại", color = NflixTextMuted, fontSize = 12.sp)
+                }
+                Switch(
+                    checked = settings.readerAutoHideChrome,
+                    onCheckedChange = { on ->
+                        scope.launch { app.settings.set(SettingsStore.READER_AUTOHIDE, on) }
                     },
                     colors = SwitchDefaults.colors(checkedTrackColor = NflixViolet)
                 )

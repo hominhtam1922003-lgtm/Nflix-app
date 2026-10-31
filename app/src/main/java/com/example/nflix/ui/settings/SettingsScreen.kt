@@ -73,6 +73,10 @@ private val CHECK_OPTIONS = listOf(
     "SIX_HOURS" to "Mỗi 6 giờ",
     "ON_OPEN" to "Chỉ khi mở app"
 )
+private val READER_MODE_OPTIONS = listOf(
+    "SCROLL" to "Cuộn dọc",
+    "PAGE" to "Lật trang"
+)
 
 val SHELF_DEFS = listOf(
     "continue" to "Xem tiếp",
@@ -83,6 +87,19 @@ val SHELF_DEFS = listOf(
 
 private fun labelOf(options: List<Pair<String, String>>, key: String): String =
     options.firstOrNull { it.first == key }?.second ?: key
+
+/** Ask for the notification permission right where the user turns it on. */
+private fun requestNotificationPermission(context: android.content.Context) {
+    if (android.os.Build.VERSION.SDK_INT < 33) return
+    val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.POST_NOTIFICATIONS
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    if (!granted) {
+        (context as? android.app.Activity)?.requestPermissions(
+            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7002
+        )
+    }
+}
 
 private fun dirSize(file: File): Long =
     if (file.isDirectory) file.listFiles()?.sumOf { dirSize(it) } ?: 0L else file.length()
@@ -200,14 +217,20 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                 label = "Báo khi có tập / chap mới",
                 sub = "Cho các bộ đang theo dõi",
                 checked = settings.notifyNewEpisode
-            ) { on -> scope.launch { app.settings.set(SettingsStore.NOTIFY_NEW, on) } }
+            ) { on ->
+                if (on) requestNotificationPermission(context)
+                scope.launch { app.settings.set(SettingsStore.NOTIFY_NEW, on) }
+            }
         }
         item {
             ToggleRow(
                 label = "Hiện thông báo trên màn hình khóa",
                 sub = "",
                 checked = settings.lockScreenNotif
-            ) { on -> scope.launch { app.settings.set(SettingsStore.LOCK_NOTIF, on) } }
+            ) { on ->
+                if (on) requestNotificationPermission(context)
+                scope.launch { app.settings.set(SettingsStore.LOCK_NOTIF, on) }
+            }
         }
         item {
             ValueRow(
@@ -240,6 +263,29 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                 sub = "Đã chặn 100% — kể cả quảng cáo cờ bạc",
                 checked = settings.adBlock
             ) { on -> scope.launch { app.settings.set(SettingsStore.AD_BLOCK, on) } }
+        }
+
+        item { GroupHeader("ĐỌC TRUYỆN") }
+        item {
+            ValueRow(
+                label = "Chế độ đọc",
+                sub = "Áp dụng cho Manhwa và Truyện",
+                value = labelOf(READER_MODE_OPTIONS, settings.readerMode)
+            ) { optionSheet = "readerMode" }
+        }
+        item {
+            ToggleRow(
+                label = "Tự ẩn thanh công cụ khi đọc",
+                sub = "Đọc cho thoáng — chạm vào màn hình để hiện lại",
+                checked = settings.readerAutoHideChrome
+            ) { on -> scope.launch { app.settings.set(SettingsStore.READER_AUTOHIDE, on) } }
+        }
+        item {
+            ToggleRow(
+                label = "Giữ màn hình sáng khi đọc",
+                sub = "Không tắt màn hình trong lúc đọc",
+                checked = settings.readerKeepScreenOn
+            ) { on -> scope.launch { app.settings.set(SettingsStore.READER_KEEP_ON, on) } }
         }
 
         item { GroupHeader("DỮ LIỆU") }
@@ -280,6 +326,16 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
             current = settings.checkInterval,
             onSelect = { key ->
                 scope.launch { app.settings.setString(SettingsStore.CHECK_INTERVAL, key) }
+                optionSheet = null
+            },
+            onDismiss = { optionSheet = null }
+        )
+        "readerMode" -> OptionSheet(
+            title = "Chế độ đọc",
+            options = READER_MODE_OPTIONS,
+            current = settings.readerMode,
+            onSelect = { key ->
+                scope.launch { app.settings.setString(SettingsStore.READER_MODE, key) }
                 optionSheet = null
             },
             onDismiss = { optionSheet = null }

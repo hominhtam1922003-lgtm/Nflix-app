@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +40,7 @@ fun TitleGridScreen(
     onOpenTitle: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    BackHandler(onBack = onBack)
     Column(modifier = modifier.fillMaxSize().background(NflixBackground)) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),

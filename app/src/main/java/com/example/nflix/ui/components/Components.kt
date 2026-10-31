@@ -50,6 +50,33 @@ import com.example.nflix.ui.theme.NflixViolet
 private val BadgeShape = RoundedCornerShape(6.dp)
 private val CardShape = RoundedCornerShape(14.dp)
 
+/**
+ * Image with a fallback chain: some KKPhim posters (upload/vod/*.jpg) fail
+ * to load on-device while the sibling thumb works — try primary, then the
+ * fallback URL, so a card never sits blank when either image is alive.
+ */
+@Composable
+fun FallbackImage(
+    primary: String,
+    fallback: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    var model by androidx.compose.runtime.remember(primary, fallback) {
+        androidx.compose.runtime.mutableStateOf(primary.ifBlank { fallback })
+    }
+    AsyncImage(
+        model = model,
+        contentDescription = contentDescription,
+        contentScale = contentScale,
+        modifier = modifier,
+        onError = {
+            if (model != fallback && fallback.isNotBlank()) model = fallback
+        }
+    )
+}
+
 @Composable
 fun QualityBadge(quality: String, modifier: Modifier = Modifier) {
     if (quality.isBlank()) return
@@ -139,10 +166,10 @@ fun PosterCard(
                 .clip(CardShape)
                 .background(NflixSurfaceVariant)
         ) {
-            AsyncImage(
-                model = item.posterUrl.ifBlank { item.thumbUrl },
+            FallbackImage(
+                primary = item.posterUrl,
+                fallback = item.thumbUrl,
                 contentDescription = item.name,
-                contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
             if (item.isHot) {
@@ -251,10 +278,10 @@ fun UpdatedRow(
                 .clip(RoundedCornerShape(8.dp))
                 .background(NflixSurfaceVariant)
         ) {
-            AsyncImage(
-                model = item.posterUrl.ifBlank { item.thumbUrl },
+            FallbackImage(
+                primary = item.posterUrl,
+                fallback = item.thumbUrl,
                 contentDescription = item.name,
-                contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
         }
