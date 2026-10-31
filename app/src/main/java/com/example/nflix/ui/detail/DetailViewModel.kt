@@ -75,20 +75,26 @@ class DetailViewModel(
                 _state.update {
                     it.copy(loading = false, detail = detail, serverIndex = preferred)
                 }
-                // Opening the detail of a TRACKED title (favorited, notify on,
-                // or started) acknowledges what's out: "+N mới" may only count
-                // units released AFTER this moment.
+                // Refresh the released count for a TRACKED title (favorited,
+                // notify on, or started). "Có tập mới" = units the SOURCE added
+                // after tracking began (user rule) — merely opening this page
+                // must NOT clear them; only watching/reading them does. The
+                // single exception: a tracked row with no baseline yet gets
+                // its baseline here (everything out now = the starting point).
                 val total = totalUnits(detail)
                 val stNow = app.database.userStateDao().get(item.id)
                 if (stNow != null && total > 0 &&
                     (stNow.following || stNow.notifyOn || stNow.favorite || stNow.lastUnitNumber > 0f)
                 ) {
-                    val acked = stNow.copy(
-                        seenCount = maxOf(stNow.seenCount, total),
-                        latestCount = maxOf(stNow.latestCount, total)
-                    )
-                    app.database.userStateDao().upsert(acked)
-                    _state.update { it.copy(userState = acked) }
+                    val next = if (stNow.seenCount == 0 && stNow.latestCount == 0) {
+                        stNow.copy(seenCount = total, latestCount = total)
+                    } else {
+                        stNow.copy(latestCount = maxOf(stNow.latestCount, total))
+                    }
+                    if (next != stNow) {
+                        app.database.userStateDao().upsert(next)
+                        _state.update { it.copy(userState = next) }
+                    }
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false) }

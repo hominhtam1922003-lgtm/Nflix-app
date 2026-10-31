@@ -171,6 +171,16 @@ class PlayerViewModel(
             val total = s.detail?.servers?.maxOfOrNull { srv -> srv.episodes.size }
                 ?: current.latestCount
             val newLatest = maxOf(current.latestCount, total)
+            // "Có tập mới" counts units the SOURCE added after tracking began.
+            // First ever watch = baseline (everything out now). After that,
+            // watching consumes only the units actually watched (<= this one),
+            // so a newly added episode stays "new" until he really watches it.
+            val consumed = episodes().count { it.number <= episode.number }
+            val newSeen = when {
+                current.seenCount == 0 && current.latestCount == 0 -> newLatest
+                consumed > 0 -> maxOf(current.seenCount, minOf(consumed, newLatest))
+                else -> current.seenCount
+            }
             val next = current.withWatched(episode.number).copy(
                 lastUnitLabel = episode.label,
                 lastUnitNumber = episode.number,
@@ -178,9 +188,7 @@ class PlayerViewModel(
                 durationMs = durationMs,
                 progressFraction = (positionMs.toFloat() / durationMs).coerceIn(0f, 1f),
                 finished = finished,
-                // Watching IS tracking (user rule): the count out right now
-                // becomes the baseline; only later releases count as new.
-                seenCount = newLatest,
+                seenCount = newSeen,
                 latestCount = newLatest,
                 pageIndex = 0,
                 pageCount = 0,

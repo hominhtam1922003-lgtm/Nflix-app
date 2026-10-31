@@ -102,6 +102,14 @@ class ReaderViewModel(
         val total = _state.value.chapters.maxOfOrNull { it.number }?.toInt()
             ?: current.latestCount
         val newLatest = maxOf(current.latestCount, total)
+        // Same rule as the player: first read = baseline; afterwards only the
+        // chapters actually read (<= this one) stop counting as new.
+        val consumed = _state.value.chapters.count { it.number <= chapter.number }
+        val newSeen = when {
+            current.seenCount == 0 && current.latestCount == 0 -> newLatest
+            consumed > 0 -> maxOf(current.seenCount, minOf(consumed, newLatest))
+            else -> current.seenCount
+        }
         val next = current.withWatched(chapter.number).copy(
             lastUnitLabel = chapter.label,
             lastUnitNumber = chapter.number,
@@ -109,9 +117,7 @@ class ReaderViewModel(
             pageCount = pageCount,
             progressFraction = page.toFloat() / pageCount,
             finished = finished,
-            // Reading IS tracking (user rule): the count out right now
-            // becomes the baseline; only later releases count as new.
-            seenCount = newLatest,
+            seenCount = newSeen,
             latestCount = newLatest,
             lastTouchedEpochSec = System.currentTimeMillis() / 1000
         )
