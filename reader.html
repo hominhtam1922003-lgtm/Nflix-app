@@ -1,0 +1,1 @@
+<!doctype html><html><body><h1>File reader</h1><input type="file" id="f"><pre id="out"></pre><script>document.getElementById('f').addEventListener('change',function(e){var file=e.target.files[0];if(!file)return;var r=new FileReader();r.onload=function(){document.getElementById('out').textContent=r.result;};r.readAsText(file);});</script></body></html>
