@@ -103,6 +103,7 @@ private fun highlightedName(name: String, query: String): androidx.compose.ui.te
 @Composable
 fun SearchScreen(
     onOpenTitle: (TitleItem) -> Unit,
+    onClose: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -246,8 +247,8 @@ fun SearchScreen(
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier
                         .clickable {
-                            viewModel.setQuery("")
                             keyboard?.hide()
+                            onClose()
                         }
                         .padding(start = 12.dp)
                 )

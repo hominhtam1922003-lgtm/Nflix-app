@@ -43,6 +43,7 @@ import com.example.nflix.ui.mypage.MyPageScreen
 import com.example.nflix.ui.reader.ReaderScreen
 import com.example.nflix.ui.search.SearchScreen
 import com.example.nflix.ui.settings.SettingsScreen
+import com.example.nflix.ui.top.TopScreen
 import com.example.nflix.work.NewEpisodeWorker
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -56,11 +57,12 @@ import com.example.nflix.ui.theme.NflixVioletSoft
 
 private data class TabSpec(val label: String, val iconRes: Int)
 
-// 4 tabs (user order 2026-11-01): Khám phá removed — 5 tabs squeezed the
-// bar until labels wrapped and icons misaligned; 4 tabs fit cleanly.
+// 4 tabs (user orders 2026-11-01): Khám phá removed (5 tabs squeezed the
+// bar until labels wrapped), then Tìm kiếm removed — the header search icon
+// opens the Search screen as an overlay; its slot became "Top" (BXH).
 private val TABS = listOf(
     TabSpec("Trang chủ", R.drawable.ic_home),
-    TabSpec("Tìm kiếm", R.drawable.ic_search),
+    TabSpec("Top", R.drawable.ic_chart),
     TabSpec("Hoạt động", R.drawable.ic_history),
     TabSpec("Của tôi", R.drawable.ic_smiley)
 )
@@ -103,6 +105,7 @@ private fun NflixShell() {
     var detailItem by remember { mutableStateOf<TitleItem?>(null) }
     var readerRequest by remember { mutableStateOf<Pair<TitleItem, ChapterItem>?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(false) }
 
     val openTitle: (TitleItem) -> Unit = { detailItem = it }
 
@@ -213,6 +216,16 @@ private fun NflixShell() {
             SettingsScreen(onBack = { settingsOpen = false })
             return
         }
+        searchOpen -> {
+            // Search lives UNDER detail/reader: opening a result stacks the
+            // detail above it, and closing the detail returns here.
+            BackHandler { searchOpen = false }
+            SearchScreen(
+                onOpenTitle = openTitle,
+                onClose = { searchOpen = false }
+            )
+            return
+        }
     }
 
     // Back inside the shell: family screen → Home, other tabs → Home tab.
@@ -265,7 +278,7 @@ private fun NflixShell() {
                     family = familyRoute!!,
                     onFamilyChange = { familyRoute = it },
                     onOpenTitle = openTitle,
-                    onGoSearch = { selected = 1 }
+                    onGoSearch = { searchOpen = true }
                 )
                 selected == 0 -> {
                     val homeVm: HomeViewModel = viewModel()
@@ -275,14 +288,14 @@ private fun NflixShell() {
                         onFamilyChip = { familyRoute = it },
                         onPlayDirect = playDirect,
                         onResume = resumeByItem,
-                        onGoSearch = { selected = 1 }
+                        onGoSearch = { searchOpen = true }
                     )
                 }
-                selected == 1 -> SearchScreen(onOpenTitle = openTitle)
+                selected == 1 -> TopScreen(onOpenTitle = openTitle)
                 selected == 2 -> ActivityScreen(
                     onOpenTitle = openTitle,
                     onResume = resumeFromState,
-                    onOpenSearch = { selected = 1 }
+                    onOpenSearch = { searchOpen = true }
                 )
                 else -> MyPageScreen(
                     onOpenTitle = openTitle,

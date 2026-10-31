@@ -98,6 +98,10 @@ class NetTruyenSource(
     suspend fun hot(page: Int = 1): List<TitleItem> =
         parseItems(getDoc("/tim-truyen/$MANHWA_GENRE?sort=13&page=$page"))
 
+    /** Top tuần (sort=12) — the only real weekly chart among all sources. */
+    suspend fun topWeek(page: Int = 1): List<TitleItem> =
+        parseItems(getDoc("/tim-truyen/$MANHWA_GENRE?sort=12&page=$page"))
+
     /** Newest-updated manhwa (default sort on the genre list). */
     suspend fun latest(page: Int = 1): List<TitleItem> =
         parseItems(getDoc("/tim-truyen/$MANHWA_GENRE?page=$page"))
