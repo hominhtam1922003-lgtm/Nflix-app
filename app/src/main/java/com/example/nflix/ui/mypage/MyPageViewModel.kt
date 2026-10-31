@@ -41,7 +41,7 @@ class MyPageViewModel(private val app: NflixApp) : ViewModel() {
 
     init {
         viewModelScope.launch {
-            dao.followingCount().collect { c -> _state.update { it.copy(followingCount = c) } }
+            dao.trackedCount().collect { c -> _state.update { it.copy(followingCount = c) } }
         }
         viewModelScope.launch {
             dao.favoriteCount().collect { c -> _state.update { it.copy(favoriteCount = c) } }
@@ -50,7 +50,7 @@ class MyPageViewModel(private val app: NflixApp) : ViewModel() {
             dao.watchLaterCount().collect { c -> _state.update { it.copy(watchLaterCount = c) } }
         }
         viewModelScope.launch {
-            joined(dao.following()).collect { list -> _state.update { it.copy(following = list) } }
+            joined(dao.tracked()).collect { list -> _state.update { it.copy(following = list) } }
         }
         viewModelScope.launch {
             joined(dao.favorites()).collect { list -> _state.update { it.copy(favorites = list) } }

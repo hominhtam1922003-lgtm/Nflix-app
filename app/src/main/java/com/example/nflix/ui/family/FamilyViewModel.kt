@@ -41,7 +41,9 @@ data class FamilyUiState(
     val hasNew: Boolean = false,
     val newEntries: List<Pair<TitleItem, Int>> = emptyList(),
     val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList(),
-    val phimFilter: PhimFilter = PhimFilter()
+    val phimFilter: PhimFilter = PhimFilter(),
+    /** Anime filter: kind/country are fixed (hoat-hinh + Nhật Bản); category/year vary. */
+    val animeFilter: PhimFilter = PhimFilter(kind = "hoat-hinh", country = "nhat-ban")
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -113,7 +115,7 @@ class FamilyViewModel(
     init {
         when (family) {
             Family.PHIM -> applyPhimFilter(PhimFilter())
-            Family.ANIME -> loadAnime()
+            Family.ANIME -> applyAnimeFilter(PhimFilter(kind = "hoat-hinh", country = "nhat-ban"))
             else -> selectContext(0)
         }
         if (family == Family.DONGHUA) {
@@ -126,7 +128,7 @@ class FamilyViewModel(
     /** Followed titles with unseen new episodes/chapters — drives the header bell. */
     private fun collectFollowingNew() {
         viewModelScope.launch {
-            app.database.userStateDao().following().flatMapLatest { states ->
+            app.database.userStateDao().tracked().flatMapLatest { states ->
                 val withNew = states.filter { it.newCount > 0 }
                 if (withNew.isEmpty()) flowOf(emptyList())
                 else app.database.titleDao().observeByIds(withNew.map { it.titleId }).map { titles ->
@@ -172,7 +174,7 @@ class FamilyViewModel(
                         list to list
                     }
                     Family.ANIME -> {
-                        val list = app.kkPhim.anime(1)
+                        val list = fetchAnime(_state.value.animeFilter, 1)
                         list to list
                     }
                     Family.DONGHUA -> {
@@ -191,7 +193,7 @@ class FamilyViewModel(
                     }
                     Family.TRUYEN -> {
                         val slug = TRUYEN_GENRES[index].second
-                        if (slug.isEmpty()) app.truyenQq.hot() to app.truyenQq.latest()
+                        if (slug.isEmpty()) app.truyenQq.home()
                         else {
                             val list = app.truyenQq.byGenre(slug)
                             list to list
@@ -235,7 +237,7 @@ class FamilyViewModel(
                 if (f.isDefault) app.kkPhim.latest(page)
                 else fetchPhim(f, page)
             }
-            Family.ANIME -> app.kkPhim.anime(page)
+            Family.ANIME -> fetchAnime(s.animeFilter, page)
             Family.DONGHUA -> app.hhKungfu.latest(page)
             Family.MANHWA -> {
                 val idx = s.contextIndex
@@ -313,11 +315,26 @@ class FamilyViewModel(
         }
     }
 
-    private fun loadAnime() {
-        _state.update { it.copy(loading = true) }
+    /** One page of Anime (Nhật Bản only): plain feed when unfiltered, else the filtered list. */
+    private suspend fun fetchAnime(filter: PhimFilter, page: Int): List<TitleItem> =
+        if (filter.category.isEmpty() && filter.year == 0) {
+            app.kkPhim.anime(page)
+        } else {
+            app.kkPhim.listFiltered(
+                kind = "hoat-hinh",
+                category = filter.category,
+                country = "nhat-ban",
+                year = filter.year,
+                page = page
+            )
+        }
+
+    /** Anime tab: apply a new filter (from the "Thể loại" sheet) and reload. */
+    fun applyAnimeFilter(filter: PhimFilter) {
+        _state.update { it.copy(animeFilter = filter, loading = true, rowsPage = 1) }
         viewModelScope.launch {
             try {
-                val list = app.kkPhim.anime(1)
+                val list = fetchAnime(filter, 1)
                 app.database.titleDao().upsertAll(list.map { it.toEntity() })
                 _state.update {
                     it.copy(loading = false, posters = list, rows = list, rowsPage = 1, rowsHasMore = true)

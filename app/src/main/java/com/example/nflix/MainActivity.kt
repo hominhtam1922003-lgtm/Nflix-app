@@ -36,7 +36,6 @@ import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.ui.activity.ActivityScreen
 import com.example.nflix.ui.detail.DetailScreen
-import com.example.nflix.ui.discover.DiscoverScreen
 import com.example.nflix.ui.family.FamilyScreen
 import com.example.nflix.ui.home.HomeScreen
 import com.example.nflix.ui.home.HomeViewModel
@@ -57,9 +56,10 @@ import com.example.nflix.ui.theme.NflixVioletSoft
 
 private data class TabSpec(val label: String, val iconRes: Int)
 
+// 4 tabs (user order 2026-11-01): Khám phá removed — 5 tabs squeezed the
+// bar until labels wrapped and icons misaligned; 4 tabs fit cleanly.
 private val TABS = listOf(
     TabSpec("Trang chủ", R.drawable.ic_home),
-    TabSpec("Khám phá", R.drawable.ic_target),
     TabSpec("Tìm kiếm", R.drawable.ic_search),
     TabSpec("Hoạt động", R.drawable.ic_history),
     TabSpec("Của tôi", R.drawable.ic_smiley)
@@ -241,7 +241,8 @@ private fun NflixShell() {
                         label = {
                             Text(
                                 text = tab.label,
-                                color = if (isSelected) NflixViolet else NflixTextMuted
+                                color = if (isSelected) NflixViolet else NflixTextMuted,
+                                maxLines = 1
                             )
                         },
                         colors = NavigationBarItemDefaults.colors(
@@ -264,7 +265,7 @@ private fun NflixShell() {
                     family = familyRoute!!,
                     onFamilyChange = { familyRoute = it },
                     onOpenTitle = openTitle,
-                    onGoSearch = { selected = 2 }
+                    onGoSearch = { selected = 1 }
                 )
                 selected == 0 -> {
                     val homeVm: HomeViewModel = viewModel()
@@ -274,18 +275,14 @@ private fun NflixShell() {
                         onFamilyChip = { familyRoute = it },
                         onPlayDirect = playDirect,
                         onResume = resumeByItem,
-                        onGoSearch = { selected = 2 }
+                        onGoSearch = { selected = 1 }
                     )
                 }
-                selected == 1 -> DiscoverScreen(
-                    onOpenTitle = openTitle,
-                    onOpenSearch = { selected = 2 }
-                )
-                selected == 2 -> SearchScreen(onOpenTitle = openTitle)
-                selected == 3 -> ActivityScreen(
+                selected == 1 -> SearchScreen(onOpenTitle = openTitle)
+                selected == 2 -> ActivityScreen(
                     onOpenTitle = openTitle,
                     onResume = resumeFromState,
-                    onOpenSearch = { selected = 2 }
+                    onOpenSearch = { selected = 1 }
                 )
                 else -> MyPageScreen(
                     onOpenTitle = openTitle,

@@ -114,7 +114,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
 
     private fun newFlow(): Flow<List<ShelfEntry>> =
-        db.userStateDao().following().flatMapLatest { states ->
+        db.userStateDao().tracked().flatMapLatest { states ->
             val withNew = states.filter { it.newCount > 0 }
             if (withNew.isEmpty()) flowOf(emptyList())
             else db.titleDao().observeByIds(withNew.map { it.titleId }).map { titles ->

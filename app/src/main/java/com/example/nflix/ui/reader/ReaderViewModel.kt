@@ -109,8 +109,9 @@ class ReaderViewModel(
             pageCount = pageCount,
             progressFraction = page.toFloat() / pageCount,
             finished = finished,
-            // Reading a followed title acknowledges the current latest count.
-            seenCount = if (current.following || current.notifyOn) newLatest else current.seenCount,
+            // Reading IS tracking (user rule): the count out right now
+            // becomes the baseline; only later releases count as new.
+            seenCount = newLatest,
             latestCount = newLatest,
             lastTouchedEpochSec = System.currentTimeMillis() / 1000
         )

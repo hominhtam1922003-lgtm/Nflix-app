@@ -178,8 +178,9 @@ class PlayerViewModel(
                 durationMs = durationMs,
                 progressFraction = (positionMs.toFloat() / durationMs).coerceIn(0f, 1f),
                 finished = finished,
-                // Watching a followed title acknowledges the current latest count.
-                seenCount = if (current.following || current.notifyOn) newLatest else current.seenCount,
+                // Watching IS tracking (user rule): the count out right now
+                // becomes the baseline; only later releases count as new.
+                seenCount = newLatest,
                 latestCount = newLatest,
                 pageIndex = 0,
                 pageCount = 0,

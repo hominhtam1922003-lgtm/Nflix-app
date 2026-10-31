@@ -29,7 +29,8 @@ class NewEpisodeWorker(
         val settings = app.settings.flow.first()
         if (!settings.notifyNewEpisode) return Result.success()
 
-        val states = app.database.userStateDao().followingOnce().take(30)
+        val dao = app.database.userStateDao()
+        val states = dao.trackedOnce().take(30)
         val updatedNames = mutableListOf<String>()
         for (st in states) {
             val entity = app.database.titleDao().observe(st.titleId).first() ?: continue
@@ -43,9 +44,22 @@ class NewEpisodeWorker(
                 }
                 maxOf(detail.totalCount, detail.item.episodeCount)
             }.getOrDefault(0)
-            if (total > st.latestCount) {
-                app.database.userStateDao().upsert(st.copy(latestCount = total))
-                updatedNames += item.name
+            if (total <= 0) continue
+            when {
+                // First check after tracking started: everything already out
+                // is the BASELINE — it must never be reported as new.
+                st.seenCount == 0 && st.latestCount == 0 ->
+                    dao.upsert(st.copy(latestCount = total, seenCount = total))
+                // Legacy row that never got a baseline — heal silently.
+                st.seenCount == 0 -> {
+                    val base = maxOf(st.latestCount, total)
+                    dao.upsert(st.copy(latestCount = base, seenCount = base))
+                }
+                // Genuinely new units beyond the baseline.
+                total > st.latestCount -> {
+                    dao.upsert(st.copy(latestCount = total))
+                    if (total > st.seenCount) updatedNames += item.name
+                }
             }
         }
         if (updatedNames.isNotEmpty()) {

@@ -279,7 +279,13 @@ class KkPhimSource(
             }
             if (episodes.isNotEmpty()) servers.add(ServerGroup(serverName, langKey, episodes))
         }
-        val total = itemJson.optInt("episode_total")
+        // episode_total is the PLANNED total (a series can announce 40 while
+        // 19 are out) — new-episode counting must use RELEASED episodes, i.e.
+        // the highest episode number actually present on a server.
+        val released = servers.maxOfOrNull { g ->
+            g.episodes.maxOfOrNull { it.number } ?: 0f
+        }?.toInt() ?: 0
+        val total = if (released > 0) released else itemJson.optInt("episode_total")
         return TitleDetail(
             item = base.copy(episodeCount = if (total > 0) total else base.episodeCount),
             description = itemJson.optString("content").trim(),

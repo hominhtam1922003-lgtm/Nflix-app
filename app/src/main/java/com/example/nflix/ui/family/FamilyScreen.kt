@@ -4,12 +4,15 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -201,20 +204,19 @@ fun FamilyScreen(
             )
             Spacer(Modifier.height(10.dp))
             // Second row per family (user redesign 2026-11-01): Donghua keeps
-            // its day chips; Phim/Manhwa/Truyện get ONE "Thể loại" button that
-            // opens the filter sheet; Anime needs no second row.
+            // its day chips; Phim/Anime/Manhwa/Truyện get ONE "Thể loại" button
+            // that opens the filter sheet (Anime filter added per user report).
             when (family) {
                 Family.DONGHUA -> ContextChips(
                     labels = contextLabels,
                     selectedIndex = state.contextIndex,
                     onSelect = { viewModel.selectContext(it) }
                 )
-                Family.PHIM, Family.MANHWA, Family.TRUYEN -> GenreFilterButton(
+                Family.PHIM, Family.ANIME, Family.MANHWA, Family.TRUYEN -> GenreFilterButton(
                     summary = filterSummary(family, state),
                     active = filterActive(family, state),
                     onClick = { showFilter = true }
                 )
-                Family.ANIME -> Unit
             }
         }
 
@@ -287,6 +289,14 @@ fun FamilyScreen(
                 },
                 onDismiss = { showFilter = false }
             )
+            Family.ANIME -> AnimeFilterSheet(
+                current = state.animeFilter,
+                onApply = { filter ->
+                    showFilter = false
+                    viewModel.applyAnimeFilter(filter)
+                },
+                onDismiss = { showFilter = false }
+            )
             Family.MANHWA, Family.TRUYEN -> GenrePickSheet(
                 labels = contextLabels,
                 selectedIndex = state.contextIndex,
@@ -310,6 +320,13 @@ private fun filterSummary(family: Family, state: FamilyUiState): String = when (
             ?.takeIf { f.kind != "phim-bo" }?.let { parts += it }
         KkPhimSource.CATEGORIES.firstOrNull { it.second == f.category }?.first?.let { parts += it }
         KkPhimSource.COUNTRIES.firstOrNull { it.second == f.country }?.first?.let { parts += it }
+        if (f.year > 0) parts += f.year.toString()
+        parts.joinToString(" · ")
+    }
+    Family.ANIME -> {
+        val f = state.animeFilter
+        val parts = mutableListOf<String>()
+        KkPhimSource.CATEGORIES.firstOrNull { it.second == f.category }?.first?.let { parts += it }
         if (f.year > 0) parts += f.year.toString()
         parts.joinToString(" · ")
     }
@@ -379,39 +396,44 @@ private fun PhimFilterSheet(
     val years = listOf(0) + (2026 downTo 2015).toList()
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        // Sections scroll; the Đặt lại / Lọc footer stays pinned and visible —
+        // chips only take effect when the user taps "Lọc" (user report).
+        Column(modifier = Modifier.fillMaxHeight(0.92f).padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text("Lọc phim", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-
-            FilterSection("Loại") {
-                FilterChipRow(
-                    options = listOf("" to "Tất cả") + FamilyViewModel.PHIM_KINDS.map { it.second to it.first },
-                    selected = kind,
-                    onSelect = { kind = it }
-                )
+            Column(
+                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
+            ) {
+                FilterSection("Loại") {
+                    FilterChipRow(
+                        options = listOf("" to "Tất cả") + FamilyViewModel.PHIM_KINDS.map { it.second to it.first },
+                        selected = kind,
+                        onSelect = { kind = it }
+                    )
+                }
+                FilterSection("Thể loại") {
+                    FilterChipRow(
+                        options = listOf("" to "Tất cả") + KkPhimSource.CATEGORIES.map { it.second to it.first },
+                        selected = category,
+                        onSelect = { category = it }
+                    )
+                }
+                FilterSection("Quốc gia") {
+                    FilterChipRow(
+                        options = listOf("" to "Tất cả") + KkPhimSource.COUNTRIES.map { it.second to it.first },
+                        selected = country,
+                        onSelect = { country = it }
+                    )
+                }
+                FilterSection("Năm phát hành") {
+                    FilterChipRow(
+                        options = years.map { y -> y.toString() to if (y == 0) "Tất cả" else y.toString() },
+                        selected = year.toString(),
+                        onSelect = { year = it.toIntOrNull() ?: 0 }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
             }
-            FilterSection("Thể loại") {
-                FilterChipRow(
-                    options = listOf("" to "Tất cả") + KkPhimSource.CATEGORIES,
-                    selected = category,
-                    onSelect = { category = it }
-                )
-            }
-            FilterSection("Quốc gia") {
-                FilterChipRow(
-                    options = listOf("" to "Tất cả") + KkPhimSource.COUNTRIES,
-                    selected = country,
-                    onSelect = { country = it }
-                )
-            }
-            FilterSection("Năm phát hành") {
-                FilterChipRow(
-                    options = years.map { y -> y.toString() to if (y == 0) "Tất cả" else y.toString() },
-                    selected = year.toString(),
-                    onSelect = { year = it.toIntOrNull() ?: 0 }
-                )
-            }
-
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Button(
                     onClick = {
                         kind = "phim-bo"; category = ""; country = ""; year = 0
@@ -429,7 +451,58 @@ private fun PhimFilterSheet(
                     colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
                     shape = RoundedCornerShape(50),
                     modifier = Modifier.weight(2f)
-                ) { Text("Áp dụng", color = Color.White, fontWeight = FontWeight.SemiBold) }
+                ) { Text("Lọc", color = Color.White, fontWeight = FontWeight.SemiBold) }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/** Anime filter sheet: Thể loại + Năm (loại/quốc gia are fixed: hoạt hình + Nhật Bản). */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun AnimeFilterSheet(
+    current: PhimFilter,
+    onApply: (PhimFilter) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var category by remember { mutableStateOf(current.category) }
+    var year by remember { mutableIntStateOf(current.year) }
+    val years = listOf(0) + (2026 downTo 2015).toList()
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Lọc anime", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            FilterSection("Thể loại") {
+                FilterChipRow(
+                    options = listOf("" to "Tất cả") + KkPhimSource.CATEGORIES.map { it.second to it.first },
+                    selected = category,
+                    onSelect = { category = it }
+                )
+            }
+            FilterSection("Năm phát hành") {
+                FilterChipRow(
+                    options = years.map { y -> y.toString() to if (y == 0) "Tất cả" else y.toString() },
+                    selected = year.toString(),
+                    onSelect = { year = it.toIntOrNull() ?: 0 }
+                )
+            }
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                Button(
+                    onClick = { category = ""; year = 0 },
+                    colors = ButtonDefaults.buttonColors(containerColor = NflixBackground),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.weight(1f)
+                ) { Text("Đặt lại", color = Color.White) }
+                Spacer(Modifier.width(10.dp))
+                Button(
+                    onClick = {
+                        onApply(PhimFilter(kind = "hoat-hinh", category = category, country = "nhat-ban", year = year))
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.weight(2f)
+                ) { Text("Lọc", color = Color.White, fontWeight = FontWeight.SemiBold) }
             }
             Spacer(Modifier.height(24.dp))
         }

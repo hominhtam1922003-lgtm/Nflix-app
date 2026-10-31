@@ -75,11 +75,14 @@ class DetailViewModel(
                 _state.update {
                     it.copy(loading = false, detail = detail, serverIndex = preferred)
                 }
-                // Opening the detail of a followed title acknowledges what's out:
-                // "+N mới" may only count units released AFTER this moment.
+                // Opening the detail of a TRACKED title (favorited, notify on,
+                // or started) acknowledges what's out: "+N mới" may only count
+                // units released AFTER this moment.
                 val total = totalUnits(detail)
                 val stNow = app.database.userStateDao().get(item.id)
-                if (stNow != null && (stNow.following || stNow.notifyOn) && total > 0) {
+                if (stNow != null && total > 0 &&
+                    (stNow.following || stNow.notifyOn || stNow.favorite || stNow.lastUnitNumber > 0f)
+                ) {
                     val acked = stNow.copy(
                         seenCount = maxOf(stNow.seenCount, total),
                         latestCount = maxOf(stNow.latestCount, total)
@@ -205,7 +208,22 @@ class DetailViewModel(
         }
     }
 
-    fun toggleFavorite() = mutateState { it.copy(favorite = !it.favorite) }
+    fun toggleFavorite() {
+        // Favoriting also starts tracking (user rule): baseline = what's out NOW.
+        val total = _state.value.detail?.let { totalUnits(it) } ?: 0
+        mutateState {
+            val on = !it.favorite
+            if (on && total > 0) {
+                it.copy(
+                    favorite = true,
+                    seenCount = maxOf(it.seenCount, total),
+                    latestCount = maxOf(it.latestCount, total)
+                )
+            } else {
+                it.copy(favorite = on)
+            }
+        }
+    }
     fun toggleWatchLater() = mutateState { it.copy(watchLater = !it.watchLater) }
     fun toggleBell() {
         // Baseline rule: following starts counting from what is already out NOW —

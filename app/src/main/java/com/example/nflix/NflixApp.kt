@@ -46,6 +46,19 @@ class NflixApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // Heal legacy "Có tập mới" baselines: rows tracked before the baseline
+        // rule existed can carry seenCount = 0 with a full back catalog in
+        // latestCount, which displayed as "+132 chap mới" (user report
+        // 2026-11-01). First sight of the current count IS the baseline —
+        // only units released after tracking may ever count as new.
+        appScope.launch {
+            runCatching {
+                val dao = database.userStateDao()
+                dao.trackedOnce()
+                    .filter { it.seenCount == 0 && it.latestCount > 0 }
+                    .forEach { dao.upsert(it.copy(seenCount = it.latestCount)) }
+            }
+        }
         // Keep the background check schedule in sync with the user's setting.
         appScope.launch {
             settings.flow
@@ -107,6 +120,9 @@ class NflixApp : Application(), ImageLoaderFactory {
                     req.url.host.contains("kcgsbok.com") ->
                         builder.header("Referer", "https://nettruyen.gg/")
                     req.url.host.contains("cc3t.net") ->
+                        builder.header("Referer", "https://nettruyenqq.org/")
+                    req.url.host.contains("nettruyenqq") ||
+                        req.url.host.contains("truyentranhqq") ->
                         builder.header("Referer", "https://nettruyenqq.org/")
                 }
                 chain.proceed(builder.build())

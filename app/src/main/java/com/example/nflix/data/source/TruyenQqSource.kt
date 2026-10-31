@@ -28,8 +28,8 @@ class TruyenQqSource(
             "tim-kiem", "the-loai", "dang-nhap", "dang-ky", "truyen-hot", "contact"
         )
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()
@@ -82,6 +82,13 @@ class TruyenQqSource(
     suspend fun latest(): List<TitleItem> {
         val doc = getDoc("/")
         return parseCards(doc.selectFirst("#contentstory") ?: doc)
+    }
+
+    /** Both home sections from ONE fetch — the hosts are slow, never fetch "/" twice. */
+    suspend fun home(): Pair<List<TitleItem>, List<TitleItem>> {
+        val doc = getDoc("/")
+        return parseCards(doc.selectFirst("#owl-slide") ?: doc) to
+            parseCards(doc.selectFirst("#contentstory") ?: doc)
     }
 
     /** Genre listing — same card structure as the home page.
