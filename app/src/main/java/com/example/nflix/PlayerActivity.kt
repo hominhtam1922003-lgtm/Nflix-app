@@ -63,8 +63,10 @@ import com.example.nflix.data.AppSettings
 import com.example.nflix.player.PlaybackKind
 import com.example.nflix.player.PlayerUiState
 import com.example.nflix.player.PlayerViewModel
+import com.example.nflix.ui.theme.NflixAmber
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixGreen
+import com.example.nflix.ui.theme.NflixRed
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixTheme
 import com.example.nflix.ui.theme.NflixViolet
@@ -193,6 +195,9 @@ private fun PlayerScreen(
     var showEpisodes by remember { mutableStateOf(false) }
     var showQuickSettings by remember { mutableStateOf(false) }
     var portrait by remember { mutableStateOf(false) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
+    var retryKey by remember { mutableIntStateOf(0) }
+    var autoSwitchedSlug by remember { mutableStateOf<String?>(null) }
 
     fun applyQualityCap(cap: Int) {
         qualityCap = cap
@@ -203,13 +208,15 @@ private fun PlayerScreen(
     }
 
     // Load the episode's stream into ExoPlayer.
-    LaunchedEffect(state.episode?.slug, state.serverIndex, state.kind) {
+    LaunchedEffect(state.episode?.slug, state.serverIndex, state.kind, retryKey) {
         val ep = state.episode ?: return@LaunchedEffect
         if (state.kind != PlaybackKind.STREAM || ep.streamUrl.isBlank()) return@LaunchedEffect
         ended = false
+        playbackError = null
         val dataSource = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
             .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(mapOf("Referer" to "https://phimapi.com/"))
         val source = HlsMediaSource.Factory(dataSource)
             .createMediaSource(MediaItem.fromUri(ep.streamUrl))
         exo.setMediaSource(source)
@@ -244,6 +251,29 @@ private fun PlayerScreen(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 onPipEligible(playing && settings.pipEnabled)
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // Never sit on a silent black screen (user report 2026-11-01):
+                // first try ONE silent switch to the next server; if that also
+                // fails (or there is no other server), surface a real error.
+                isBuffering = false
+                val s = viewModel.state.value
+                val servers = s.detail?.servers ?: emptyList()
+                if (servers.size > 1 && autoSwitchedSlug != s.episode?.slug) {
+                    autoSwitchedSlug = s.episode?.slug
+                    viewModel.switchServer((s.serverIndex + 1) % servers.size, exo.currentPosition)
+                } else {
+                    playbackError = when (error.errorCode) {
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                            "Server báo không tìm thấy video này — link nguồn có thể đã chết. Hãy thử lại, đổi server hoặc xem bằng web."
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                            "Không kết nối được tới server phát. Kiểm tra mạng rồi thử lại."
+                        else ->
+                            "Không phát được video từ server này. Hãy thử lại hoặc đổi server."
+                    }
+                }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -357,6 +387,56 @@ private fun PlayerScreen(
             }
         }
 
+        // Real stream error (ExoPlayer) — message + recovery actions.
+        if (playbackError != null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(32.dp)
+                    .background(Color(0xCC000000), RoundedCornerShape(16.dp))
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(playbackError!!, color = Color.White, fontSize = 14.sp)
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Thử lại",
+                        color = NflixViolet,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable { retryKey++ }
+                    )
+                    if ((state.detail?.servers?.size ?: 0) > 1) {
+                        Spacer(Modifier.width(20.dp))
+                        Text(
+                            "Đổi server",
+                            color = NflixViolet,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable {
+                                val count = state.detail?.servers?.size ?: 1
+                                viewModel.switchServer(
+                                    (state.serverIndex + 1) % count,
+                                    exo.currentPosition
+                                )
+                            }
+                        )
+                    }
+                    if (!state.episode?.embedUrl.isNullOrBlank()) {
+                        Spacer(Modifier.width(20.dp))
+                        Text(
+                            "Xem bằng web",
+                            color = NflixViolet,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable { viewModel.useEmbedFallback() }
+                        )
+                    }
+                }
+            }
+        }
+
         seekFlash?.let { flash ->
             Box(
                 modifier = Modifier
@@ -397,6 +477,16 @@ private fun PlayerScreen(
                 durationMs = durationMs,
                 speed = speed,
                 qualityLabel = currentQualityLabel,
+                statusText = when {
+                    playbackError != null -> "Server lỗi"
+                    state.loading || isBuffering -> "Đang tải…"
+                    else -> "Server đang tốt"
+                },
+                statusDot = when {
+                    playbackError != null -> NflixRed
+                    state.loading || isBuffering -> NflixAmber
+                    else -> NflixGreen
+                },
                 settings = settings,
                 onBack = onBack,
                 onPlayPause = {

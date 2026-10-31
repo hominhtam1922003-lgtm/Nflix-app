@@ -119,6 +119,16 @@ class PlayerViewModel(
         }
     }
 
+    /** Fallback for a dead direct stream: play this episode through its web embed. */
+    fun useEmbedFallback() {
+        val s = _state.value
+        val ep = s.episode ?: return
+        if (ep.embedUrl.isBlank()) return
+        _state.update {
+            it.copy(loading = false, kind = PlaybackKind.EMBED, embedUrl = ep.embedUrl, error = "")
+        }
+    }
+
     fun server(): ServerGroup? = _state.value.detail?.servers?.getOrNull(_state.value.serverIndex)
 
     fun episodes(): List<EpisodeItem> = server()?.episodes ?: emptyList()

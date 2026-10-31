@@ -88,6 +88,8 @@ internal fun PlayerControls(
     durationMs: Long,
     speed: Float,
     qualityLabel: String,
+    statusText: String,
+    statusDot: Color,
     settings: AppSettings,
     onBack: () -> Unit,
     onPlayPause: () -> Unit,
@@ -143,8 +145,8 @@ internal fun PlayerControls(
                         append("${state.episode?.label ?: ""}")
                         if (versionText.isNotBlank()) append(" · $versionText")
                         append(" · ")
-                        withStyle(SpanStyle(color = NflixGreen)) { append("●") }
-                        append(" Server đang tốt")
+                        withStyle(SpanStyle(color = statusDot)) { append("●") }
+                        append(" $statusText")
                     },
                     color = NflixTextMuted,
                     fontSize = 12.sp
