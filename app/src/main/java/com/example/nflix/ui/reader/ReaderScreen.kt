@@ -1,0 +1,690 @@
+package com.example.nflix.ui.reader
+
+import android.app.Activity
+import android.view.WindowManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.example.nflix.NflixApp
+import com.example.nflix.R
+import com.example.nflix.data.AppSettings
+import com.example.nflix.data.SettingsStore
+import com.example.nflix.data.model.ChapterItem
+import com.example.nflix.data.model.TitleItem
+import com.example.nflix.ui.components.NewBadge
+import com.example.nflix.ui.detail.fmtNum
+import com.example.nflix.ui.theme.NflixAmber
+import com.example.nflix.ui.theme.NflixBackground
+import com.example.nflix.ui.theme.NflixGreen
+import com.example.nflix.ui.theme.NflixRed
+import com.example.nflix.ui.theme.NflixSurface
+import com.example.nflix.ui.theme.NflixTextMuted
+import com.example.nflix.ui.theme.NflixViolet
+import com.example.nflix.ui.theme.NflixVioletSoft
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReaderScreen(
+    item: TitleItem,
+    chapter: ChapterItem,
+    onBack: () -> Unit,
+    onOpenChapter: (ChapterItem) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as NflixApp
+    var attempt by remember { mutableIntStateOf(0) }
+    val viewModel = remember(item.id, chapter.number, attempt) { ReaderViewModel(app, item, chapter) }
+    val state by viewModel.state.collectAsState()
+    val settings by app.settings.flow.collectAsState(initial = AppSettings())
+    val scope = rememberCoroutineScope()
+
+    var showDrawer by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var reportNote by remember { mutableStateOf(false) }
+    var scrubPage by remember { mutableStateOf<Float?>(null) }
+    var brightness by remember { mutableStateOf<Float?>(null) }
+
+    val totalPages = state.pages.size
+    val displayPage = (scrubPage?.toInt() ?: state.currentPage).coerceIn(1, maxOf(1, totalPages))
+
+    // Keep screen on while reading (per setting).
+    DisposableEffect(settings.readerKeepScreenOn) {
+        val activity = context as? Activity
+        if (settings.readerKeepScreenOn) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+    // Brightness override from the reading-settings sheet.
+    DisposableEffect(brightness) {
+        val activity = context as? Activity
+        val b = brightness
+        if (activity != null && b != null) {
+            val attrs = activity.window.attributes
+            attrs.screenBrightness = b
+            activity.window.attributes = attrs
+        }
+        onDispose {
+            if (activity != null && b != null) {
+                val attrs = activity.window.attributes
+                attrs.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                activity.window.attributes = attrs
+            }
+        }
+    }
+
+    val listState = rememberLazyListState()
+    val pagerState = rememberPagerState(initialPage = 0) { maxOf(1, totalPages) }
+
+    // Initial position: jump to the saved page once pages arrive.
+    LaunchedEffect(state.pages, state.chapter?.number) {
+        if (state.pages.isNotEmpty() && state.startPage > 1) {
+            if (settings.readerMode == "PAGE") pagerState.scrollToPage(state.startPage - 1)
+            else listState.scrollToItem(state.startPage - 1)
+        }
+    }
+    // Track the visible page (scroll mode).
+    LaunchedEffect(listState, state.pages) {
+        snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
+            if (state.pages.isNotEmpty()) {
+                viewModel.onPageVisible((idx + 1).coerceAtMost(state.pages.size))
+            }
+        }
+    }
+    // Track the visible page (pager mode).
+    LaunchedEffect(pagerState, state.pages) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            if (state.pages.isNotEmpty()) viewModel.onPageVisible(page + 1)
+        }
+    }
+
+    fun jumpToPage(page: Int) {
+        val target = page.coerceIn(1, maxOf(1, totalPages))
+        scope.launch {
+            if (settings.readerMode == "PAGE") pagerState.animateScrollToPage(target - 1)
+            else listState.animateScrollToItem(target - 1)
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize().background(Color.Black)) {
+        when {
+            state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = NflixViolet)
+            }
+            state.error.isNotBlank() -> Column(
+                modifier = Modifier.fillMaxSize().padding(32.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(state.error, color = Color.White, fontSize = 14.sp)
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = { attempt++ },
+                    colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
+                    shape = RoundedCornerShape(50)
+                ) { Text("Thử lại", color = Color.White) }
+            }
+            settings.readerMode == "PAGE" -> HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                AsyncImage(
+                    model = state.pages[page],
+                    contentDescription = "Trang ${page + 1}",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            else -> LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                itemsIndexed(state.pages, key = { i, _ -> i }) { _, url ->
+                    AsyncImage(
+                        model = url,
+                        contentDescription = null,
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier.fillMaxWidth().background(Color(0xFF101016))
+                    )
+                }
+                viewModel.nextChapter()?.let { next ->
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(NflixVioletSoft)
+                                .border(1.dp, NflixViolet, RoundedCornerShape(12.dp))
+                                .clickable { onOpenChapter(next) }
+                                .padding(vertical = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "Đọc tiếp: ${next.label} ›",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Top bar (floating)
+        Box(
+            modifier = Modifier.fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent))
+                )
+                .statusBarsPadding()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ReaderCircleBtn(R.drawable.ic_back, "Quay lại") { onBack() }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        item.name,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    Text(
+                        state.chapter?.label ?: chapter.label,
+                        color = NflixTextMuted,
+                        fontSize = 12.sp
+                    )
+                }
+                ReaderCircleBtn(
+                    R.drawable.ic_bookmark, "Đánh dấu trang",
+                    tint = if (viewModel.isBookmarkedHere()) NflixAmber else Color.White
+                ) { viewModel.toggleBookmark() }
+                Spacer(Modifier.width(8.dp))
+                Box {
+                    ReaderCircleBtn(R.drawable.ic_more, "Thêm") { showMenu = true }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                        modifier = Modifier.background(NflixSurface)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Danh sách chap", color = Color.White) },
+                            onClick = { showMenu = false; showDrawer = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Cài đặt đọc", color = Color.White) },
+                            onClick = { showMenu = false; showSettings = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Báo lỗi chap", color = Color.White) },
+                            onClick = { showMenu = false; reportNote = true }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Page pill (right, middle)
+        if (totalPages > 0) {
+            Box(
+                modifier = Modifier.align(Alignment.CenterEnd)
+                    .padding(end = 10.dp)
+                    .background(Color(0xB3000000), RoundedCornerShape(50))
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text("Trang $displayPage/$totalPages", color = Color.White, fontSize = 12.sp)
+            }
+        }
+
+        // Bottom: page progress + chapter controls
+        Column(
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
+        ) {
+            if (totalPages > 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Trang $displayPage", color = Color.White, fontSize = 12.sp)
+                    Slider(
+                        value = displayPage.toFloat(),
+                        onValueChange = { scrubPage = it },
+                        onValueChangeFinished = {
+                            scrubPage?.let { jumpToPage(it.toInt()) }
+                            scrubPage = null
+                        },
+                        valueRange = 1f..totalPages.toFloat(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = NflixViolet,
+                            activeTrackColor = NflixViolet,
+                            inactiveTrackColor = Color(0xFF3A3A46)
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp)
+                    )
+                    Text("$totalPages", color = NflixTextMuted, fontSize = 12.sp)
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .background(NflixSurface)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val prev = viewModel.prevChapter()
+                val next = viewModel.nextChapter()
+                Text(
+                    "‹ Chap trước",
+                    color = if (prev != null) Color.White else NflixTextMuted,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .then(if (prev != null) Modifier.clickable { onOpenChapter(prev) } else Modifier)
+                        .padding(horizontal = 8.dp, vertical = 10.dp)
+                )
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    painter = painterResource(R.drawable.ic_list),
+                    contentDescription = "Danh sách chap",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                        .clip(CircleShape)
+                        .clickable { showDrawer = true }
+                        .padding(2.dp)
+                )
+                Spacer(Modifier.width(22.dp))
+                Icon(
+                    painter = painterResource(R.drawable.ic_gear),
+                    contentDescription = "Cài đặt đọc",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                        .clip(CircleShape)
+                        .clickable { showSettings = true }
+                        .padding(2.dp)
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "Chap sau ›",
+                    color = if (next != null) Color.White else NflixTextMuted,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .then(if (next != null) Modifier.clickable { onOpenChapter(next) } else Modifier)
+                        .padding(horizontal = 8.dp, vertical = 10.dp)
+                )
+            }
+        }
+
+        if (reportNote) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(1800)
+                reportNote = false
+            }
+            Box(
+                modifier = Modifier.align(Alignment.Center)
+                    .background(Color(0xDD14141B), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 18.dp, vertical = 12.dp)
+            ) {
+                Text("Đã ghi nhận báo lỗi chap này", color = Color.White, fontSize = 13.sp)
+            }
+        }
+    }
+
+    if (showDrawer) {
+        ChapterSheet(
+            viewModel = viewModel,
+            item = item,
+            onClose = { showDrawer = false },
+            onPickChapter = { ch ->
+                showDrawer = false
+                if (viewModel.isCurrent(ch)) {
+                    jumpToPage(state.userState?.pageIndex ?: 1)
+                } else {
+                    onOpenChapter(ch)
+                }
+            }
+        )
+    }
+
+    if (showSettings) {
+        ReaderSettingsSheet(
+            settings = settings,
+            brightness = brightness,
+            onBrightness = { brightness = it },
+            onClose = { showSettings = false }
+        )
+    }
+}
+
+@Composable
+private fun ReaderCircleBtn(
+    iconRes: Int,
+    desc: String,
+    tint: Color = Color.White,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier.size(36.dp)
+            .background(Color(0x80000000), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = desc,
+            tint = tint,
+            modifier = Modifier.size(19.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChapterSheet(
+    viewModel: ReaderViewModel,
+    item: TitleItem,
+    onClose: () -> Unit,
+    onPickChapter: (ChapterItem) -> Unit
+) {
+    val state by viewModel.state.collectAsState()
+    var sortDesc by remember { mutableStateOf(true) }
+    var jumpText by remember { mutableStateOf("") }
+    var jumpError by remember { mutableStateOf("") }
+    val chapters = if (sortDesc) state.chapters.reversed() else state.chapters
+    val current = state.chapter
+    val maxNumber = state.chapters.maxOfOrNull { it.number } ?: 0f
+
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        containerColor = NflixBackground
+    ) {
+        Column(modifier = Modifier.fillMaxHeight(0.88f).padding(horizontal = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Danh sách chap — ${item.name}",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                Box(
+                    modifier = Modifier.size(30.dp)
+                        .border(1.dp, Color(0xFF3A3A46), CircleShape)
+                        .clickable(onClick = onClose),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_close),
+                        contentDescription = "Đóng",
+                        tint = Color.White,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+            Text(
+                "${state.chapters.size} chap · Nguồn: ${viewModel.sourceDisplayName()}",
+                color = NflixTextMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            // Currently-reading banner
+            if (current != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(NflixVioletSoft)
+                        .border(1.dp, NflixViolet, RoundedCornerShape(12.dp))
+                        .clickable { onPickChapter(current) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Đang đọc: ", color = NflixViolet, fontSize = 13.sp)
+                    Text(
+                        "${current.label} · Trang ${state.currentPage}/${state.pages.size}",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("Đọc tiếp ›", color = NflixViolet, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            // Toolbar: jump + sort
+            Row(
+                modifier = Modifier.padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier.weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(NflixSurface)
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    BasicTextField(
+                        value = jumpText,
+                        onValueChange = { jumpText = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                        cursorBrush = SolidColor(NflixViolet),
+                        decorationBox = { inner ->
+                            if (jumpText.isEmpty()) {
+                                Text("Đi tới chap…", color = NflixTextMuted, fontSize = 14.sp)
+                            }
+                            inner()
+                        }
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val n = jumpText.trim().toFloatOrNull()
+                        val target = state.chapters.firstOrNull { it.number == n }
+                        if (target != null) {
+                            jumpError = ""
+                            onPickChapter(target)
+                        } else {
+                            jumpError = "Không có chap này"
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
+                    shape = RoundedCornerShape(10.dp)
+                ) { Text("Đi", color = Color.White, fontWeight = FontWeight.SemiBold) }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    if (sortDesc) "Mới nhất ▼" else "Cũ nhất ▼",
+                    color = NflixViolet,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable { sortDesc = !sortDesc }
+                )
+            }
+            if (jumpError.isNotBlank()) {
+                Text(jumpError, color = NflixRed, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+            }
+
+            LazyColumn(modifier = Modifier.padding(top = 10.dp)) {
+                items(chapters, key = { it.number }) { ch ->
+                    val isCurrent = viewModel.isCurrent(ch)
+                    val isRead = viewModel.isRead(ch)
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isCurrent) NflixVioletSoft else Color.Transparent)
+                            .clickable { onPickChapter(ch) }
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            ch.label,
+                            color = when {
+                                isCurrent -> Color.White
+                                isRead -> NflixTextMuted
+                                else -> Color.White
+                            },
+                            fontSize = 14.sp,
+                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                        )
+                        if (ch.number == maxNumber) {
+                            Spacer(Modifier.width(8.dp))
+                            NewBadge()
+                        }
+                        if (isCurrent) {
+                            val pct = if (state.pages.isNotEmpty())
+                                (state.currentPage * 100 / state.pages.size) else 0
+                            Spacer(Modifier.width(8.dp))
+                            Text("đang đọc $pct%", color = NflixViolet, fontSize = 12.sp)
+                        } else if (isRead) {
+                            Spacer(Modifier.width(8.dp))
+                            Text("✓ đã đọc", color = NflixGreen, fontSize = 12.sp)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (ch.updatedLabel.isNotBlank()) {
+                            Text(ch.updatedLabel, color = NflixTextMuted, fontSize = 12.sp)
+                        }
+                    }
+                }
+                item { Spacer(Modifier.height(20.dp)) }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReaderSettingsSheet(
+    settings: AppSettings,
+    brightness: Float?,
+    onBrightness: (Float?) -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as NflixApp
+    val scope = rememberCoroutineScope()
+    ModalBottomSheet(onDismissRequest = onClose, containerColor = NflixSurface) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Cài đặt đọc", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(14.dp))
+            Text("Chế độ đọc", color = NflixTextMuted, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf("SCROLL" to "Cuộn dọc", "PAGE" to "Lật trang").forEach { (key, label) ->
+                    val selected = settings.readerMode == key
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(if (selected) NflixVioletSoft else NflixBackground)
+                            .then(
+                                if (selected) Modifier.border(1.dp, NflixViolet, RoundedCornerShape(50))
+                                else Modifier
+                            )
+                            .clickable {
+                                scope.launch { app.settings.setString(SettingsStore.READER_MODE, key) }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 9.dp)
+                    ) {
+                        Text(label, color = if (selected) NflixViolet else Color.White, fontSize = 13.sp)
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Text("Độ sáng", color = NflixTextMuted, fontSize = 12.sp)
+            Slider(
+                value = brightness ?: 0.7f,
+                onValueChange = { onBrightness(it) },
+                valueRange = 0.1f..1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = NflixViolet,
+                    activeTrackColor = NflixViolet,
+                    inactiveTrackColor = Color(0xFF3A3A46)
+                )
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Giữ màn hình sáng", color = Color.White, fontSize = 14.sp)
+                    Text("Không tắt màn hình khi đang đọc", color = NflixTextMuted, fontSize = 12.sp)
+                }
+                Switch(
+                    checked = settings.readerKeepScreenOn,
+                    onCheckedChange = { on ->
+                        scope.launch { app.settings.set(SettingsStore.READER_KEEP_ON, on) }
+                    },
+                    colors = SwitchDefaults.colors(checkedTrackColor = NflixViolet)
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}

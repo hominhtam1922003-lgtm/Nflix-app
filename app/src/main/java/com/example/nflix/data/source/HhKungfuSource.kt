@@ -1,0 +1,255 @@
+package com.example.nflix.data.source
+
+import com.example.nflix.data.model.EpisodeItem
+import com.example.nflix.data.model.Family
+import com.example.nflix.data.model.ServerGroup
+import com.example.nflix.data.model.TitleDetail
+import com.example.nflix.data.model.TitleItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import java.util.concurrent.TimeUnit
+
+/**
+ * HHKungFu (hhkungfu.ee) — source for the Donghua family.
+ * WordPress/Halim theme, server-rendered HTML. Verified live 2026-11-01:
+ * see ~/workspace/nflix/research/donghua.md.
+ *
+ * Playback note: streams are embed iframes (streamfree.vip / JW Player),
+ * no direct m3u8 at the verified layer — episodes resolve to an embed URL
+ * and the player shows them in an embed surface.
+ */
+class HhKungfuSource(
+    private val client: OkHttpClient = defaultClient(),
+    private val base: String = "https://hhkungfu.ee"
+) {
+    companion object {
+        const val SOURCE_ID = "hhkungfu"
+        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
+                        .build()
+                )
+            }
+            .build()
+    }
+
+    private suspend fun getDoc(path: String): Document = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(base + path).get().build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IllegalStateException("HHKungfu HTTP ${resp.code}")
+            Jsoup.parse(resp.body?.string().orEmpty(), base)
+        }
+    }
+
+    private suspend fun postAjax(body: FormBody): String = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("$base/wp-admin/admin-ajax.php")
+            .post(body)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IllegalStateException("HHKungfu ajax HTTP ${resp.code}")
+            resp.body?.string().orEmpty()
+        }
+    }
+
+    private fun parseItem(el: Element): TitleItem? {
+        val link = el.selectFirst("a.halim-thumb") ?: el.selectFirst("a[href]") ?: return null
+        val href = link.attr("href")
+        val slug = href.trimEnd('/').substringAfterLast('/')
+        if (slug.isBlank() || slug.contains("watch")) return null
+        val img = el.selectFirst("img.film-poster-img") ?: el.selectFirst("img")
+        val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }.orEmpty()
+        val name = el.selectFirst("h2.entry-title")?.text()?.trim().orEmpty()
+        if (name.isBlank()) return null
+        val origin = el.selectFirst("p.original_title")?.text()?.trim().orEmpty()
+        val statusText = el.selectFirst("span.status")?.text()?.trim().orEmpty()
+        val quality = when {
+            statusText.contains("4K", true) -> "4K"
+            statusText.contains("HD", true) -> "FHD"
+            else -> statusText
+        }
+        val epText = el.selectFirst("span.episode")?.text()?.trim().orEmpty()
+        val epNum = Regex("(\\d+)").find(epText)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        return TitleItem(
+            id = "${Family.DONGHUA.name}:$SOURCE_ID:$slug",
+            family = Family.DONGHUA,
+            sourceId = SOURCE_ID,
+            slug = slug,
+            name = name,
+            originName = origin,
+            posterUrl = poster,
+            thumbUrl = poster,
+            quality = quality,
+            latestLabel = if (epNum > 0) "Tập $epNum" else epText,
+            episodeCount = epNum
+        )
+    }
+
+    private fun parseItems(doc: Document): List<TitleItem> =
+        doc.select(".halim-item").mapNotNull { parseItem(it) }
+            .distinctBy { it.slug }
+
+    /** Home page shelves (hot / trending blocks render as .halim-item too). */
+    suspend fun trending(): List<TitleItem> = parseItems(getDoc("/"))
+
+    /** "Mới cập nhật" full listing, paginated /page/<n>. */
+    suspend fun latest(page: Int = 1): List<TitleItem> =
+        parseItems(getDoc(if (page <= 1) "/moi-cap-nhat" else "/moi-cap-nhat/page/$page"))
+
+    suspend fun search(keyword: String): List<TitleItem> {
+        val q = java.net.URLEncoder.encode(keyword, "UTF-8")
+        return parseItems(getDoc("/?s=$q"))
+    }
+
+    /**
+     * Weekday schedule. [dateKey]: chu-nhat | thu-2 | ... | thu-7 (VN weekday,
+     * mapped by the app — the site's own "today" follows server time).
+     */
+    suspend fun schedule(dateKey: String): List<TitleItem> {
+        val html = postAjax(
+            FormBody.Builder()
+                .add("action", "dox_schedule_page")
+                .add("date", dateKey)
+                .add("type", "page")
+                .build()
+        )
+        val frag = Jsoup.parseBodyFragment(html, base)
+        val out = mutableListOf<TitleItem>()
+        for (a in frag.select("a.schedule-item")) {
+            val href = a.attr("href")
+            val slug = href.trimEnd('/').substringAfterLast('/')
+            if (slug.isBlank()) continue
+            val img = a.selectFirst("img")
+            val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }.orEmpty()
+            val name = a.selectFirst(".schedule-title, h3, .title")?.text()?.trim()
+                ?: img?.attr("alt")?.trim().orEmpty()
+            if (name.isBlank()) continue
+            val epText = a.text()
+            val epNum = Regex("(\\d+)").findAll(epText).lastOrNull()?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            out.add(
+                TitleItem(
+                    id = "${Family.DONGHUA.name}:$SOURCE_ID:$slug",
+                    family = Family.DONGHUA,
+                    sourceId = SOURCE_ID,
+                    slug = slug,
+                    name = name,
+                    posterUrl = poster,
+                    thumbUrl = poster,
+                    latestLabel = if (epNum > 0) "Tập $epNum" else "",
+                    episodeCount = epNum
+                )
+            )
+        }
+        return out.distinctBy { it.slug }
+    }
+
+    suspend fun detail(slug: String): TitleDetail {
+        val doc = getDoc("/$slug")
+        val ogTitle = doc.selectFirst("meta[property=og:title]")?.attr("content").orEmpty()
+        val ogImage = doc.selectFirst("meta[property=og:image]")?.attr("content").orEmpty()
+        val desc = doc.selectFirst("meta[name=description]")?.attr("content").orEmpty()
+        val name = doc.selectFirst("h1.entry-title")?.text()?.trim()
+            .takeUnless { it.isNullOrBlank() }
+            ?: ogTitle.substringBefore(" - ").trim()
+        val statusText = doc.select(".status, .halim-item span.status").firstOrNull()?.text().orEmpty()
+        val quality = when {
+            statusText.contains("4K", true) -> "4K"
+            statusText.contains("HD", true) -> "FHD"
+            else -> ""
+        }
+
+        val servers = mutableListOf<ServerGroup>()
+        val serverBlocks = doc.select("#halim-list-server .halim-server")
+        for (block in serverBlocks) {
+            val heading = block.selectFirst(".server-name, h3, strong")?.text().orEmpty()
+            val blockText = block.text()
+            val (serverName, langKey) = when {
+                heading.contains("Thuyết Minh", true) || blockText.contains("Thuyết Minh", true) ->
+                    "Thuyết Minh" to "tm"
+                heading.contains("Vietsub", true) || blockText.contains("Vietsub", true) ->
+                    "Vietsub" to "vs"
+                else -> heading.ifBlank { "Server" } to ""
+            }
+            val episodes = mutableListOf<EpisodeItem>()
+            for (a in block.select("a[data-ep], a[href*=watch-]")) {
+                val epAttr = a.attr("data-ep") // "tap-<n>"
+                val num = Regex("(\\d+(?:\\.\\d+)?)").find(epAttr)?.groupValues?.get(1)?.toFloatOrNull()
+                    ?: Regex("(\\d+)").find(a.text())?.groupValues?.get(1)?.toFloatOrNull()
+                    ?: continue
+                val postId = a.attr("data-post-id")
+                val sv = a.attr("data-sv")
+                // Composite locator resolved later by resolveEmbed().
+                val locator = "$postId|$epAttr|$sv"
+                if (episodes.any { it.number == num }) continue
+                episodes.add(
+                    EpisodeItem(
+                        label = "Tập ${if (num % 1f == 0f) num.toInt() else num}",
+                        number = num,
+                        slug = locator
+                    )
+                )
+            }
+            episodes.sortBy { it.number }
+            if (episodes.isNotEmpty()) {
+                servers.add(ServerGroup(serverName, langKey, episodes))
+            }
+        }
+
+        val total = servers.maxOfOrNull { it.episodes.size } ?: 0
+        val versionBadge = when {
+            servers.any { it.langKey == "tm" } -> "TM"
+            servers.any { it.langKey == "vs" } -> "VS"
+            else -> ""
+        }
+        val item = TitleItem(
+            id = "${Family.DONGHUA.name}:$SOURCE_ID:$slug",
+            family = Family.DONGHUA,
+            sourceId = SOURCE_ID,
+            slug = slug,
+            name = name,
+            posterUrl = ogImage,
+            thumbUrl = ogImage,
+            quality = quality,
+            versionBadge = versionBadge,
+            latestLabel = if (total > 0) "Tập $total" else "",
+            episodeCount = total
+        )
+        return TitleDetail(item = item, description = desc, totalCount = total, servers = servers)
+    }
+
+    /**
+     * Resolve the embed player URL for one episode locator ("postId|tap-n|sv").
+     * [prefer4k] picks the vip4k stream type when available.
+     */
+    suspend fun resolveEmbed(locator: String, prefer4k: Boolean = false): String {
+        val parts = locator.split("|")
+        require(parts.size == 3) { "Bad donghua locator" }
+        val (postId, chapterSt, sv) = parts
+        val type = if (prefer4k) "vip4k" else "pro"
+        val url = "$base/player/player.php?action=dox_ajax_player&post_id=$postId&chapter_st=$chapterSt&sv=$sv&type=$type"
+        val html = withContext(Dispatchers.IO) {
+            val req = Request.Builder().url(url).get()
+                .header("X-Requested-With", "XMLHttpRequest")
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) throw IllegalStateException("HHKungfu player HTTP ${resp.code}")
+                resp.body?.string().orEmpty()
+            }
+        }
+        val doc = Jsoup.parse(html, base)
+        val iframe = doc.selectFirst("iframe[src]")
+        return iframe?.attr("src")?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("HHKungfu: no embed iframe")
+    }
+}

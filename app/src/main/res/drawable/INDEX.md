@@ -1,0 +1,36 @@
+# Nflix vector drawables — file ↔ icon
+
+- `ic_home.xml` — Trang chủ
+- `ic_target.xml` — Khám phá
+- `ic_search.xml` — Tìm kiếm
+- `ic_history.xml` — Hoạt động
+- `ic_smiley.xml` — Của tôi
+- `ic_bell.xml` — Chuông báo
+- `ic_bell_dot.xml` — Chuông có mới
+- `ic_bell_amber.xml` — Đã bật báo
+- `ic_bookmark.xml` — Xem sau
+- `ic_heart.xml` — Yêu thích
+- `ic_gear.xml` — Cài đặt
+- `ic_back.xml` — Quay lại
+- `ic_chev_r.xml` — Đi tiếp
+- `ic_tri_down.xml` — Mũi tên xuống
+- `ic_share.xml` — Chia sẻ
+- `ic_more.xml` — Thêm
+- `ic_check.xml` — Đã xem
+- `ic_check_green.xml` — Đã xong (xanh)
+- `ic_play.xml` — Phát
+- `ic_play_circle.xml` — Nút phát tròn
+- `ic_list.xml` — Danh sách tập/chap
+- `ic_swap.xml` — Đổi server
+- `ic_seek_back.xml` — Tua lại 10s
+- `ic_seek_fwd.xml` — Tua tới 10s
+- `ic_lock.xml` — Khoá màn hình
+- `ic_ff.xml` — Bỏ qua mở đầu
+- `ic_prev.xml` — Tập trước
+- `ic_next.xml` — Tập sau
+- `ic_pip.xml` — PiP
+- `ic_full.xml` — Toàn màn hình
+- `ic_close.xml` — Đóng
+- `ic_flame.xml` — Lửa (tìm nhiều)
+- `ic_handle.xml` — Thanh kéo ngăn
+- `ic_dot_green.xml` — Chấm server tốt
