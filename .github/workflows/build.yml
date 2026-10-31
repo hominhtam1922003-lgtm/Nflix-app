@@ -1,0 +1,35 @@
+name: Build Nflix APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Decode keystore
+        env:
+          KS_B64: ${{ secrets.NFLIX_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/nflix-release.jks"
+            echo "NFLIX_KEYSTORE_FILE=$RUNNER_TEMP/nflix-release.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Build release APK
+        env:
+          NFLIX_KEYSTORE_PASSWORD: ${{ secrets.NFLIX_KEYSTORE_PASSWORD }}
+          NFLIX_KEY_ALIAS: ${{ secrets.NFLIX_KEY_ALIAS }}
+          NFLIX_KEY_PASSWORD: ${{ secrets.NFLIX_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nflix-release-apk
+          path: app/build/outputs/apk/release/*.apk
