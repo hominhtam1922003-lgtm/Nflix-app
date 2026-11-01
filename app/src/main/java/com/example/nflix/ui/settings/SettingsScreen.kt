@@ -85,7 +85,6 @@ private val READER_MODE_OPTIONS = listOf(
 
 val SHELF_DEFS = listOf(
     "continue" to "Xem tiếp",
-    "new" to "Có tập mới",
     "today" to "Hôm nay có gì",
     "suggested" to "Gợi ý cho bạn",
     "foryou" to "Dành cho bạn",
@@ -721,7 +720,9 @@ private fun ShelvesScreen(
     val scope = rememberCoroutineScope()
     // Local ordered model: all shelves in display order with enabled flags.
     var rows by remember(settings.homeShelves) {
-        val enabled = settings.homeShelves
+        // Keys with no def (e.g. the retired "new" shelf in older saved
+        // lists) drop out of the editor and out of the next saved list.
+        val enabled = settings.homeShelves.filter { key -> SHELF_DEFS.any { it.first == key } }
         val ordered = enabled + SHELF_DEFS.map { it.first }.filter { it !in enabled }
         mutableStateOf(ordered.map { key -> key to (key in enabled) })
     }

@@ -24,7 +24,7 @@ data class AppSettings(
     val notifyNewEpisode: Boolean = true,
     val lockScreenNotif: Boolean = true,
     val checkInterval: String = "CONTINUOUS",     // CONTINUOUS | HOURLY | SIX_HOURS | ON_OPEN
-    val homeShelves: List<String> = listOf("continue", "new", "today", "suggested", "foryou", "latest"),
+    val homeShelves: List<String> = listOf("continue", "today", "suggested", "foryou", "latest"),
     val autoFallbackSource: Boolean = true,
     val adBlock: Boolean = true,
     val readerMode: String = "SCROLL",            // SCROLL | PAGE
@@ -51,7 +51,7 @@ class SettingsStore(context: Context) {
             notifyNewEpisode = p[NOTIFY_NEW] ?: true,
             lockScreenNotif = p[LOCK_NOTIF] ?: true,
             checkInterval = p[CHECK_INTERVAL] ?: "CONTINUOUS",
-            homeShelves = (p[HOME_SHELVES] ?: "continue,new,today,suggested,foryou,latest")
+            homeShelves = (p[HOME_SHELVES] ?: "continue,today,suggested,foryou,latest")
                 .split(",").map { it.trim() }.filter { it.isNotEmpty() },
             autoFallbackSource = p[AUTO_FALLBACK] ?: true,
             adBlock = p[AD_BLOCK] ?: true,

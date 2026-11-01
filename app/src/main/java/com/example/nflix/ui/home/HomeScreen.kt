@@ -68,12 +68,10 @@ fun HomeScreen(
     onPlayDirect: (TitleItem) -> Unit,
     onResume: (TitleItem) -> Unit,
     onGoSearch: () -> Unit,
-    onOpenFirstNew: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsState()
     val continueList = state.continueList
-    val newList = state.newList
     var showAll by remember { mutableStateOf<String?>(null) }
 
     when (showAll) {
@@ -84,24 +82,6 @@ fun HomeScreen(
                 onBack = { showAll = null },
                 onOpenTitle = { onResume(it) },
                 modifier = modifier
-            )
-            return
-        }
-        "new" -> {
-            TitleListScreen(
-                title = "Có tập mới",
-                items = newList.map { it.item },
-                onBack = { showAll = null },
-                onOpenTitle = onOpenTitle,
-                modifier = modifier,
-                newCountOf = { item -> newList.firstOrNull { it.item.id == item.id }?.newCount ?: 0 },
-                unitOf = { viewModel.unitOf(it) },
-                newRangeOf = { item ->
-                    newList.firstOrNull { it.item.id == item.id }
-                        ?.takeIf { it.newSeen > 0 }
-                        ?.let { it.newSeen to it.newLatest }
-                },
-                onOpenFirstNew = onOpenFirstNew
             )
             return
         }
@@ -174,17 +154,6 @@ fun HomeScreen(
                         .clickable { onGoSearch() }
                         .padding(2.dp)
                 )
-                Spacer(Modifier.width(18.dp))
-                Icon(
-                    painter = painterResource(
-                        if (newList.isNotEmpty()) R.drawable.ic_bell_dot else R.drawable.ic_bell
-                    ),
-                    contentDescription = "Thông báo",
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(24.dp)
-                        .clickable { showAll = "new" }
-                        .padding(2.dp)
-                )
             }
         }
 
@@ -240,23 +209,6 @@ fun HomeScreen(
                         }
                     }
                 }
-                "new" -> if (newList.isNotEmpty()) {
-                    Column {
-                        SectionHeader(
-                            "Có tập mới",
-                            actionLabel = "Xem tất cả",
-                            onAction = { showAll = "new" }
-                        )
-                        newList.take(4).forEach { entry ->
-                            NewEpisodeCard(
-                                entry = entry,
-                                unit = viewModel.unitOf(entry.item),
-                                // C1: straight to the first unseen new unit.
-                                onClick = { onOpenFirstNew(entry.item) }
-                            )
-                        }
-                    }
-                }
                 "today" -> if (state.todayList.isNotEmpty()) {
                     com.example.nflix.ui.components.PosterShelf(
                         title = "Hôm nay có gì",
@@ -305,51 +257,6 @@ fun HomeScreen(
         }
 
         item { Spacer(Modifier.height(24.dp)) }
-    }
-}
-
-@Composable
-private fun NewEpisodeCard(entry: ShelfEntry, unit: String, onClick: () -> Unit) {
-    val item = entry.item
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(NflixSurface)
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        com.example.nflix.ui.components.FallbackImage(
-            primary = item.posterUrl,
-            fallback = item.thumbUrl,
-            contentDescription = item.name,
-            modifier = Modifier
-                .size(width = 46.dp, height = 62.dp)
-                .clip(RoundedCornerShape(8.dp)),
-            title = item.name
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                item.name,
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1
-            )
-            val time = com.example.nflix.data.TimeText.relative(item.updatedEpochSec)
-            val countText = if (item.episodeCount > 0) "$unit mới nhất ${item.episodeCount}" else item.latestLabel
-            val sub = listOf(item.family.label, countText, time).filter { it.isNotBlank() }.joinToString(" · ")
-            Text(sub, color = NflixTextMuted, fontSize = 12.sp, maxLines = 1)
-        }
-        // C1: name the new range when the baseline is known.
-        if (entry.newSeen > 0 && entry.newLatest > entry.newSeen) {
-            com.example.nflix.ui.components.NewUnitsPill(entry.newSeen, entry.newLatest, unit)
-        } else {
-            com.example.nflix.ui.components.PlusPill(entry.newCount, unit)
-        }
     }
 }
 

@@ -63,7 +63,6 @@ import com.example.nflix.ui.components.SectionHeader
 import com.example.nflix.ui.components.UpdatedRow
 import com.example.nflix.ui.common.TitleGridScreen
 import com.example.nflix.ui.common.TitleListScreen
-import com.example.nflix.data.unitWord
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
@@ -82,7 +81,6 @@ fun FamilyScreen(
     onFamilyChange: (Family?) -> Unit,
     onOpenTitle: (TitleItem) -> Unit,
     onGoSearch: () -> Unit,
-    onOpenFirstNew: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -157,42 +155,15 @@ fun FamilyScreen(
         "rows" -> {
             // List-shelf design (approved 2026-11-01): the families' main
             // browse list is a 3-column poster grid now — same rows data,
-            // same load-more pagination, "+N" pills fed by the same
-            // newEntries/newRanges the bell list uses.
+            // same load-more pagination.
             TitleListScreen(
                 title = "Mới cập nhật",
                 items = state.rows,
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
                 modifier = modifier,
-                newCountOf = { item ->
-                    state.newEntries.firstOrNull { it.first.id == item.id }?.second ?: 0
-                },
-                unitOf = { it.family.unitWord() },
-                newRangeOf = { item ->
-                    state.newRanges[item.id]?.takeIf { it.first > 0 }
-                },
-                onOpenFirstNew = onOpenFirstNew,
                 onLoadMore = { viewModel.loadMoreRows() },
                 gridMode = true
-            )
-            return
-        }
-        "new" -> {
-            TitleListScreen(
-                title = "Có tập mới",
-                items = state.newEntries.map { it.first },
-                onBack = { showAll = null },
-                onOpenTitle = onOpenTitle,
-                modifier = modifier,
-                newCountOf = { item ->
-                    state.newEntries.firstOrNull { it.first.id == item.id }?.second ?: 0
-                },
-                unitOf = { it.family.unitWord() },
-                newRangeOf = { item ->
-                    state.newRanges[item.id]?.takeIf { it.first > 0 }
-                },
-                onOpenFirstNew = onOpenFirstNew
             )
             return
         }
@@ -231,17 +202,6 @@ fun FamilyScreen(
                     tint = Color.White,
                     modifier = Modifier.size(24.dp)
                         .clickable { onGoSearch() }
-                        .padding(2.dp)
-                )
-                Spacer(Modifier.width(18.dp))
-                Icon(
-                    painter = painterResource(
-                        if (state.hasNew) R.drawable.ic_bell_dot else R.drawable.ic_bell
-                    ),
-                    contentDescription = "Thông báo",
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(24.dp)
-                        .clickable { showAll = "new" }
                         .padding(2.dp)
                 )
             }
@@ -465,12 +425,7 @@ fun FamilyScreen(
                             item = rowItem,
                             onClick = { onOpenTitle(rowItem) },
                             modifier = Modifier.weight(1f),
-                            coverMeta = true,
-                            newCount = state.newEntries
-                                .firstOrNull { it.first.id == rowItem.id }?.second ?: 0,
-                            newSeen = state.newRanges[rowItem.id]?.first ?: 0,
-                            newLatest = state.newRanges[rowItem.id]?.second ?: 0,
-                            unit = rowItem.family.unitWord()
+                            coverMeta = true
                         )
                     }
                     repeat(3 - chunk.size) { Spacer(Modifier.weight(1f)) }

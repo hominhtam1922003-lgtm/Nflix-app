@@ -41,10 +41,8 @@ import com.example.nflix.NflixApp
 import com.example.nflix.R
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
-import com.example.nflix.data.unitWord
 import com.example.nflix.ui.common.TitleGridScreen
 import com.example.nflix.ui.components.FilterChips
-import com.example.nflix.ui.components.PlusPill
 import com.example.nflix.ui.components.PosterCard
 import com.example.nflix.ui.components.SectionHeader
 import com.example.nflix.ui.theme.NflixBackground
@@ -66,7 +64,6 @@ private fun matchesFilter(family: Family, filterIndex: Int): Boolean = when (fil
 fun MyPageScreen(
     onOpenTitle: (TitleItem) -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenFirstNew: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -161,18 +158,13 @@ fun MyPageScreen(
 
         if (state.following.isNotEmpty()) {
             item {
-                SectionHeader("Đang theo dõi — có mới lên đầu")
+                SectionHeader("Đang theo dõi")
             }
             items(state.following.size, key = { i -> state.following[i].item.id }) { i ->
                 val entry = state.following[i]
                 FollowingRow(
                     entry = entry,
-                    // C1: rows with unseen new units jump straight to the
-                    // first new one; the rest open the detail as before.
-                    onClick = {
-                        if (entry.state.newCount > 0) onOpenFirstNew(entry.item)
-                        else onOpenTitle(entry.item)
-                    }
+                    onClick = { onOpenTitle(entry.item) }
                 )
             }
         }
@@ -279,16 +271,6 @@ private fun FollowingRow(entry: LibraryEntry, onClick: () -> Unit) {
                 fontSize = 12.sp,
                 maxLines = 1
             )
-        }
-        if (st.newCount > 0) {
-            // C1: name the new range ("Tập 76–78 mới") when baseline known.
-            if (st.seenCount > 0 && st.latestCount > st.seenCount) {
-                com.example.nflix.ui.components.NewUnitsPill(
-                    st.seenCount, st.latestCount, item.family.unitWord()
-                )
-            } else {
-                PlusPill(st.newCount, item.family.unitWord())
-            }
         }
     }
 }

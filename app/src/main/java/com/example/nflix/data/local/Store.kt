@@ -59,9 +59,7 @@ data class UserStateEntity(
     val watchedUnits: String = "",
     // last time the user opened/watched/read this title (Activity screen)
     val lastTouchedEpochSec: Long = 0
-) {
-    val newCount: Int get() = (latestCount - seenCount).coerceAtLeast(0)
-}
+)
 
 @Dao
 interface TitleDao {

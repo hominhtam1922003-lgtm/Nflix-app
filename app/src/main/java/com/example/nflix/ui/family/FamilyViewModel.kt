@@ -38,10 +38,6 @@ data class FamilyUiState(
     val rowsHasMore: Boolean = false,
     val loadingMore: Boolean = false,
     val secondPosters: List<TitleItem> = emptyList(),
-    val hasNew: Boolean = false,
-    val newEntries: List<Pair<TitleItem, Int>> = emptyList(),
-    /** C1: titleId to (seenCount, latestCount) for the bell list's range pills. */
-    val newRanges: Map<String, Pair<Int, Int>> = emptyMap(),
     val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList(),
     val phimFilter: PhimFilter = PhimFilter(),
     /** Anime filter: kind/country are fixed (hoat-hinh + Nhật Bản); category/year vary. */
@@ -167,7 +163,6 @@ class FamilyViewModel(
         if (family == Family.MANHWA || family == Family.TRUYEN) {
             loadFreshShelf()
         }
-        collectFollowingNew()
     }
 
     /** A8: "Mới tinh" shelf — series that just launched, not new chapters. */
@@ -227,36 +222,6 @@ class FamilyViewModel(
                 app.database.titleDao().upsertAll(list.map { it.toEntity() })
                 _state.update { it.copy(comingSoon = list) }
             } catch (e: Exception) { /* shelf stays hidden */ }
-        }
-    }
-
-    /** Followed titles with unseen new episodes/chapters — drives the header bell. */
-    private fun collectFollowingNew() {
-        // C1: the (seen, latest) ranges ride the same tracked() stream, in a
-        // sibling collector (the entries collector below never returns).
-        viewModelScope.launch {
-            app.database.userStateDao().tracked().collect { states ->
-                _state.update {
-                    it.copy(
-                        newRanges = states.filter { s -> s.newCount > 0 }
-                            .associate { s -> s.titleId to (s.seenCount to s.latestCount) }
-                    )
-                }
-            }
-        }
-        viewModelScope.launch {
-            app.database.userStateDao().tracked().flatMapLatest { states ->
-                val withNew = states.filter { it.newCount > 0 }
-                if (withNew.isEmpty()) flowOf(emptyList())
-                else app.database.titleDao().observeByIds(withNew.map { it.titleId }).map { titles ->
-                    val byId = titles.associateBy { it.id }
-                    withNew.mapNotNull { st ->
-                        byId[st.titleId]?.let { it.toItem() to st.newCount }
-                    }
-                }
-            }.collect { entries ->
-                _state.update { it.copy(hasNew = entries.isNotEmpty(), newEntries = entries) }
-            }
         }
     }
 

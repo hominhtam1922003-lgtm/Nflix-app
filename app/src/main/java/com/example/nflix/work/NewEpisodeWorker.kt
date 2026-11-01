@@ -16,8 +16,11 @@ import kotlinx.coroutines.flow.first
 /**
  * Background new-episode checker (design: "Kiểm tra tập mới — chạy nền").
  * For every followed title, re-reads its source detail; when the source has
- * more units than last seen, updates latestCount (which drives the orange
- * "+N" pills and the bell dot) and posts ONE summary notification.
+ * more units than last seen, updates latestCount and posts ONE summary
+ * notification. Since 2026-11-01 the counts are bookkeeping only — no UI
+ * surface displays them (the user's "+N" removal order); this worker's
+ * notification is the one place new episodes are announced, and its text
+ * names titles without any "+N" count.
  *
  * C2 (K9): the old hard take(30) meant every tracked title past #30 was
  * NEVER checked. A run still checks at most [BATCH_SIZE] titles, but the
@@ -105,7 +108,10 @@ class NewEpisodeWorker(
         val text = if (names.size == 1) {
             "${names.first()} vừa có tập/chap mới"
         } else {
-            "${names.size} bộ vừa có tập/chap mới: ${names.take(3).joinToString(", ")}"
+            // Grouped form lists the titles themselves — no counts of any
+            // kind ("+N" or title tallies) per the user's 2026-11-01 order.
+            "Có tập/chap mới: ${names.take(3).joinToString(", ")}" +
+                if (names.size > 3) "…" else ""
         }
         val notification = NotificationCompat.Builder(context, NflixApp.CHANNEL_NEW_EPISODES)
             .setSmallIcon(R.drawable.ic_bell)

@@ -36,9 +36,9 @@ import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixTextMuted
 
 /**
- * Full-screen list — "Xem tất cả" for shelves (Mới nhất, Có tập mới, lịch
- * phát sóng). Default stays the row list; [gridMode] switches the body to
- * the approved 3-column poster grid (list-shelf design 2026-11-01) for the
+ * Full-screen list — "Xem tất cả" for shelves (Mới nhất, lịch phát sóng).
+ * Default stays the row list; [gridMode] switches the body to the
+ * approved 3-column poster grid (list-shelf design 2026-11-01) for the
  * surfaces the user picked — same data, same click routing, same
  * load-more, only the presentation changes.
  */
@@ -49,10 +49,6 @@ fun TitleListScreen(
     onBack: () -> Unit,
     onOpenTitle: (TitleItem) -> Unit,
     modifier: Modifier = Modifier,
-    newCountOf: (TitleItem) -> Int = { 0 },
-    unitOf: (TitleItem) -> String = { "tập" },
-    newRangeOf: (TitleItem) -> Pair<Int, Int>? = { null },
-    onOpenFirstNew: ((TitleItem) -> Unit)? = null,
     onLoadMore: (() -> Unit)? = null,
     gridMode: Boolean = false
 ) {
@@ -96,23 +92,10 @@ fun TitleListScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 gridItems(items, key = { it.id }) { item ->
-                    val range = newRangeOf(item)
                     PosterCard(
                         item = item,
-                        // Same routing as the row form: a title with
-                        // unseen new units jumps to the first new one.
-                        onClick = {
-                            if (newCountOf(item) > 0 && onOpenFirstNew != null) {
-                                onOpenFirstNew(item)
-                            } else {
-                                onOpenTitle(item)
-                            }
-                        },
-                        coverMeta = true,
-                        newCount = newCountOf(item),
-                        newSeen = range?.first ?: 0,
-                        newLatest = range?.second ?: 0,
-                        unit = unitOf(item)
+                        onClick = { onOpenTitle(item) },
+                        coverMeta = true
                     )
                 }
                 if (onLoadMore != null) {
@@ -126,22 +109,9 @@ fun TitleListScreen(
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(items, key = { it.id }) { item ->
-                    val range = newRangeOf(item)
                     UpdatedRow(
                         item = item,
-                        // C1: a row with unseen new units goes straight to
-                        // the first new one when the host wired the jump.
-                        onClick = {
-                            if (newCountOf(item) > 0 && onOpenFirstNew != null) {
-                                onOpenFirstNew(item)
-                            } else {
-                                onOpenTitle(item)
-                            }
-                        },
-                        newCount = newCountOf(item),
-                        unit = unitOf(item),
-                        newSeen = range?.first ?: 0,
-                        newLatest = range?.second ?: 0
+                        onClick = { onOpenTitle(item) }
                     )
                 }
                 if (onLoadMore != null) {

@@ -8,7 +8,6 @@ import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
 import com.example.nflix.data.toItem
-import com.example.nflix.data.unitWord
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,11 +21,7 @@ import kotlinx.coroutines.launch
 data class ShelfEntry(
     val item: TitleItem,
     val progressFraction: Float = 0f,
-    val progressLabel: String = "",
-    val newCount: Int = 0,
-    /** C1: baseline + latest counts so the pill can name the new range. */
-    val newSeen: Int = 0,
-    val newLatest: Int = 0
+    val progressLabel: String = ""
 )
 
 data class HomeUiState(
@@ -35,7 +30,6 @@ data class HomeUiState(
     val heroList: List<TitleItem> = emptyList(),
     val familyFilter: Family? = null,
     val continueList: List<ShelfEntry> = emptyList(),
-    val newList: List<ShelfEntry> = emptyList(),
     val suggestedList: List<TitleItem> = emptyList(),
     val latestList: List<TitleItem> = emptyList(),
     /** B2: today's Donghua schedule + KKPhim titles updated today (VN). */
@@ -43,7 +37,7 @@ data class HomeUiState(
     /** B1: personalised picks from the user's most-watched genre. */
     val forYouList: List<TitleItem> = emptyList(),
     val forYouTitle: String = "Dành cho bạn",
-    val shelves: List<String> = listOf("continue", "new", "today", "suggested", "foryou", "latest")
+    val shelves: List<String> = listOf("continue", "today", "suggested", "foryou", "latest")
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -74,15 +68,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     )
                     _state.update { it.copy(shelves = merged) }
                 } else {
-                    _state.update { it.copy(shelves = s.homeShelves) }
+                    _state.update { it.copy(shelves = s.homeShelves - "new") }
                 }
             }
         }
         viewModelScope.launch {
             continueFlow().collect { list -> _state.update { it.copy(continueList = list) } }
-        }
-        viewModelScope.launch {
-            newFlow().collect { list -> _state.update { it.copy(newList = list) } }
         }
     }
 
@@ -106,13 +97,16 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Shelf order Home actually renders: the saved list, with the two 1.1.0
      * shelves inserted at their default positions when an older saved list
-     * does not know them yet ("today" after "Có tập mới", "foryou" after
-     * "Gợi ý cho bạn").
+     * does not know them yet ("today" after "Xem tiếp", "foryou" after
+     * "Gợi ý cho bạn"). The retired "new" shelf ("Có tập mới" — removed by
+     * user order 2026-11-01) is stripped from older saved lists so it can
+     * never render again.
      */
     private fun effectiveShelves(saved: List<String>): List<String> {
         val list = saved.toMutableList()
+        list.remove("new")
         if ("today" !in list) {
-            val anchor = list.indexOf("new")
+            val anchor = list.indexOf("continue")
             list.add(if (anchor >= 0) anchor + 1 else list.size, "today")
         }
         if ("foryou" !in list) {
@@ -272,24 +266,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-    private fun newFlow(): Flow<List<ShelfEntry>> =
-        db.userStateDao().tracked().flatMapLatest { states ->
-            val withNew = states.filter { it.newCount > 0 }
-            if (withNew.isEmpty()) flowOf(emptyList())
-            else db.titleDao().observeByIds(withNew.map { it.titleId }).map { titles ->
-                val byId = titles.associateBy { it.id }
-                withNew.mapNotNull { st ->
-                    val item = byId[st.titleId]?.toItem() ?: return@mapNotNull null
-                    ShelfEntry(
-                        item,
-                        newCount = st.newCount,
-                        newSeen = st.seenCount,
-                        newLatest = st.latestCount
-                    )
-                }
-            }
-        }
-
     fun setFamilyFilter(family: Family?) {
         _state.update { it.copy(familyFilter = family) }
     }
@@ -304,6 +280,4 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
-
-    fun unitOf(item: TitleItem): String = item.family.unitWord()
 }

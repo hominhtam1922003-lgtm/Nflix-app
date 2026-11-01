@@ -223,55 +223,16 @@ fun NewBadge(modifier: Modifier = Modifier) {
     }
 }
 
-/** Orange "+N tập / +N chap" pill. */
-@Composable
-fun PlusPill(count: Int, unit: String, modifier: Modifier = Modifier) {
-    if (count <= 0) return
-    Box(
-        modifier = modifier
-            .background(NflixOrange, RoundedCornerShape(50))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-    ) {
-        Text("+$count $unit", color = Color(0xFF221503), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-/**
- * C1 (K8): the "+N" pill grown up — when the baseline is known it names the
- * new range ("Tập 76–78 mới", single: "Tập 76 mới") instead of a bare count.
- * seen/latest are COUNTS and unit numbers run 1..N in the app's positional
- * model, so seen+1..latest IS the new range. Unknown baseline (seen = 0)
- * falls back to the "+N" form. Display only — the seen/latest bookkeeping
- * and the user's "only real watching consumes" rule are untouched.
- */
-@Composable
-fun NewUnitsPill(seenCount: Int, latestCount: Int, unit: String, modifier: Modifier = Modifier) {
-    val count = (latestCount - seenCount).coerceAtLeast(0)
-    if (count <= 0) return
-    val unitCap = unit.replaceFirstChar { it.uppercase() }
-    val text = when {
-        seenCount <= 0 -> "+$count $unit"
-        count == 1 -> "$unitCap $latestCount mới"
-        else -> "$unitCap ${seenCount + 1}–$latestCount mới"
-    }
-    Box(
-        modifier = modifier
-            .background(NflixOrange, RoundedCornerShape(50))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-    ) {
-        Text(text, color = Color(0xFF221503), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
 /**
  * Poster card 2:3 with the design's badges; optional progress bar (Xem tiếp).
  *
  * List-shelf design (user-approved mockup 2026-11-01): with [coverMeta] the
  * card carries its "updated list" face on the cover itself — latest-unit
- * badge bottom-start on a dark scrim, orange "+N" pill bottom-end when the
- * caller supplies a real new count — and the line under the name reads
- * "Tập N · x phút trước". Default (coverMeta = false, no counts) renders
- * exactly the card every existing shelf/grid already shows.
+ * badge bottom-start on a dark scrim — and the line under the name reads
+ * "Tập N · x phút trước". Default (coverMeta = false) renders exactly the
+ * card every existing shelf/grid already shows. New-episode COUNTS are
+ * never drawn on cards (user order 2026-11-01: latest unit + relative time
+ * only; new episodes reach the user through notifications).
  */
 @Composable
 fun PosterCard(
@@ -280,11 +241,7 @@ fun PosterCard(
     modifier: Modifier = Modifier,
     progressFraction: Float? = null,
     progressLabel: String = "",
-    coverMeta: Boolean = false,
-    newCount: Int = 0,
-    newSeen: Int = 0,
-    newLatest: Int = 0,
-    unit: String = "tập"
+    coverMeta: Boolean = false
 ) {
     Column(modifier = modifier.clickable(onClick = onClick)) {
         Box(
@@ -321,12 +278,6 @@ fun PosterCard(
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
-                }
-            }
-            if (newCount > 0) {
-                Box(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)) {
-                    if (newSeen > 0 && newLatest > newSeen) NewUnitsPill(newSeen, newLatest, unit)
-                    else PlusPill(newCount, unit)
                 }
             }
         }
@@ -397,10 +348,7 @@ fun PosterShelf(
     cardWidth: Int = 112,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
-    coverMeta: Boolean = false,
-    newCountOf: (TitleItem) -> Int = { 0 },
-    newRangeOf: (TitleItem) -> Pair<Int, Int>? = { null },
-    unitOf: (TitleItem) -> String = { "tập" }
+    coverMeta: Boolean = false
 ) {
     if (items.isEmpty()) return
     Column(modifier = modifier) {
@@ -410,32 +358,23 @@ fun PosterShelf(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(items, key = { it.id }) { item ->
-                val range = newRangeOf(item)
                 PosterCard(
                     item = item,
                     onClick = { onItemClick(item) },
                     modifier = Modifier.width(cardWidth.dp),
-                    coverMeta = coverMeta,
-                    newCount = newCountOf(item),
-                    newSeen = range?.first ?: 0,
-                    newLatest = range?.second ?: 0,
-                    unit = unitOf(item)
+                    coverMeta = coverMeta
                 )
             }
         }
     }
 }
 
-/** "Mới cập nhật" list row: thumb + name + latest + relative time + optional +N pill. */
+/** "Mới cập nhật" list row: thumb + name + latest unit + relative time. */
 @Composable
 fun UpdatedRow(
     item: TitleItem,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    newCount: Int = 0,
-    unit: String = "tập",
-    newSeen: Int = 0,
-    newLatest: Int = 0
+    modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier
@@ -484,21 +423,9 @@ fun UpdatedRow(
             }
         }
         val time = item.updatedLabel.ifBlank { TimeText.relative(item.updatedEpochSec) }
-        if (newCount > 0 || time.isNotBlank()) {
+        if (time.isNotBlank()) {
             Spacer(Modifier.width(8.dp))
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                if (newCount > 0) {
-                    // C1: name the new range when the baseline is known.
-                    if (newSeen > 0 && newLatest > newSeen) NewUnitsPill(newSeen, newLatest, unit)
-                    else PlusPill(newCount, unit)
-                }
-                if (time.isNotBlank()) {
-                    Text(time, color = NflixTextMuted, fontSize = 11.sp, maxLines = 1)
-                }
-            }
+            Text(time, color = NflixTextMuted, fontSize = 11.sp, maxLines = 1)
         }
     }
 }

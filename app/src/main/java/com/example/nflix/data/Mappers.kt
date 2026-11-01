@@ -38,7 +38,7 @@ fun TitleEntity.toItem(): TitleItem = TitleItem(
     updatedEpochSec = updatedEpochSec
 )
 
-/** Unit word for "+N" pills and progress labels. */
+/** Unit word ("tập"/"chap") for progress labels. */
 fun Family.unitWord(): String = when (this) {
     Family.TRUYEN, Family.MANHWA -> "chap"
     else -> "tập"
