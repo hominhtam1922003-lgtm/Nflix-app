@@ -184,6 +184,31 @@ class SettingsStore(context: Context) {
         store.edit { it[ANIME_GENRE_CACHE] = json }
     }
 
+    /**
+     * Country-law fix (2026-11-01): Cobe country-page slug pools used to
+     * classify the Anime pool (Cobe records carry no country field).
+     * One JSON blob: { countrySlug: {"done": bool, "slugs": "a,b,c"} } —
+     * "done" marks a completed full sweep; later opens only refresh the
+     * head pages. ~13k slugs ≈ 0.4 MB.
+     */
+    val animeCountryPoolsJson: Flow<String> = store.data.map { p -> p[ANIME_COUNTRY_POOLS] ?: "" }
+
+    suspend fun setAnimeCountryPools(json: String) {
+        store.edit { it[ANIME_COUNTRY_POOLS] = json }
+    }
+
+    /**
+     * Country-law fix (2026-11-01): persistent per-slug KKPhim poster
+     * fallback for Cobe items whose own cover art is dead at the source.
+     * One JSON blob: { slug: posterUrl } — each title is looked up at
+     * most once, ever; failures are not stored.
+     */
+    val animePosterCacheJson: Flow<String> = store.data.map { p -> p[ANIME_POSTER_CACHE] ?: "" }
+
+    suspend fun setAnimePosterCache(json: String) {
+        store.edit { it[ANIME_POSTER_CACHE] = json }
+    }
+
     companion object {
         val QUALITY = stringPreferencesKey("quality_default")
         val VERSION_PRIORITY = stringPreferencesKey("version_priority")
@@ -211,5 +236,7 @@ class SettingsStore(context: Context) {
         val MANHWA_INDEX_AT = stringPreferencesKey("manhwa_index_built_at")
         val DONGHUA_SLUGS = stringPreferencesKey("donghua_slug_pool")
         val ANIME_GENRE_CACHE = stringPreferencesKey("anime_genre_cache_json")
+        val ANIME_COUNTRY_POOLS = stringPreferencesKey("anime_country_pools_json")
+        val ANIME_POSTER_CACHE = stringPreferencesKey("anime_poster_cache_json")
     }
 }

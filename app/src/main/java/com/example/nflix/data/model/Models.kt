@@ -29,6 +29,14 @@ data class TitleItem(
     val originName: String = "",
     val posterUrl: String = "",     // vertical art
     val thumbUrl: String = "",      // horizontal art
+    /**
+     * Country-law fix (2026-11-01): last-resort cover URL from the OTHER
+     * catalog (KKPhim poster for a Cobe item whose own art is dead at the
+     * source — measured: naruto-shippuden's Cobe poster AND thumb 404).
+     * Filled by AnimeCatalog's background enrichment, never persisted;
+     * the display chain tries the item's own art first, always.
+     */
+    val posterFallbackUrl: String = "",
     val quality: String = "",       // "FHD" / "HD" / "4K" / "" (no badge)
     val versionBadge: String = "",  // "TM" / "VS" / ""
     val latestLabel: String = "",   // "Tập 19" / "Chap 88" / "Full"

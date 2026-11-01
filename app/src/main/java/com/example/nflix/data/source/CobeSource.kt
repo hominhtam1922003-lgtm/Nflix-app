@@ -363,30 +363,111 @@ class CobeSource(
     /**
      * One web listing page: the items plus the source's total page count.
      * Records are the full by-slug shape, so no per-title detail call is
-     * needed for lists. The payload is a JS string with one escape layer —
-     * unescaping `\"` once makes the embedded objects plain JSON; each
-     * `"item":{...}` object is then captured with a string-aware brace
-     * scan and parsed on its own.
+     * needed for lists. Item extraction goes through [extractItemJson] —
+     * see its note on the payload's TWO escape layers.
      */
     suspend fun webListPage(path: String, page: Int, family: Family): Pair<List<TitleItem>, Int> {
         val html = getText("$webBase$path?page=$page")
-        val totalPages = Regex("""\\"totalPages\\":(\d+)""").find(html)
-            ?.groupValues?.get(1)?.toIntOrNull() ?: page
-        val unescaped = html.replace("\\\"", "\"")
-        val items = mutableListOf<TitleItem>()
+        val totalPages = totalPagesOf(html) ?: page
+        val items = extractItemJson(html)
+            .filter { it.optString("slug").isNotBlank() }
+            .map { parseItem(it, family) }
+        return items.distinctBy { it.slug } to totalPages
+    }
+
+    /**
+     * Slugs only from one web listing page (plus total page count) — the
+     * country pools are intersected with the Anime pool by slug, so the
+     * full records would be wasted work on 453 harvest pages.
+     */
+    suspend fun webListSlugs(path: String, page: Int): Pair<List<String>, Int> {
+        val html = getText("$webBase$path?page=$page")
+        val totalPages = totalPagesOf(html) ?: page
+        val slugs = extractItemJson(html)
+            .map { it.optString("slug") }
+            .filter { it.isNotBlank() }
+            .distinct()
+        return slugs to totalPages
+    }
+
+    /** One page of a Cobe country catalog (/quoc-gia/<slug>) — slugs only. */
+    suspend fun countryPoolPage(countrySlug: String, page: Int): Pair<List<String>, Int> =
+        webListSlugs("/quoc-gia/$countrySlug", page)
+
+    private fun totalPagesOf(html: String): Int? =
+        Regex("""\\"totalPages\\":(\d+)""").find(html)?.groupValues?.get(1)?.toIntOrNull()
+
+    /**
+     * Extract every embedded `"item":{...}` object from an RSC page.
+     *
+     * The flight payload carries TWO escape layers: the records are JSON
+     * text inside a JS string literal, so a quote inside a record value
+     * is `\\\"` on the wire. The old extraction (replace `\"` -> `"`,
+     * then brace-match) corrupted exactly those sequences into a bogus
+     * string end and silently dropped ~10–20% of each page — measured
+     * live 2026-11-01: 29/32 items on /the-loai/hoat-hinh and
+     * /quoc-gia/nhat-ban, 28/32 on /phim-bo. [decodeRscLayer] is a proper
+     * single-pass decode of the JS layer; after it, the text is plain
+     * JSON-level text where the string-aware brace scan is exact.
+     * Verified 32/32 on all three page types plus deep country pages.
+     */
+    private fun extractItemJson(html: String): List<JSONObject> {
+        val decoded = decodeRscLayer(html)
+        val out = mutableListOf<JSONObject>()
         var from = 0
         while (true) {
-            val idx = unescaped.indexOf("\"item\":{", from)
+            val idx = decoded.indexOf("\"item\":{", from)
             if (idx < 0) break
             val start = idx + "\"item\":".length
-            val obj = captureObject(unescaped, start) ?: break
+            val obj = captureObject(decoded, start) ?: break
             from = start + obj.length
-            runCatching { JSONObject(obj) }
-                .getOrNull()
-                ?.takeIf { it.optString("slug").isNotBlank() }
-                ?.let { items.add(parseItem(it, family)) }
+            runCatching { JSONObject(obj) }.getOrNull()?.let { out.add(it) }
         }
-        return items.distinctBy { it.slug } to totalPages
+        return out
+    }
+
+    /**
+     * Single-pass decode of the JS-string escape layer: `\\` -> `\`,
+     * `\"` -> `"`, `\/` -> `/`, `\n`/`\r`/`\t`/`\b`/`\f`, `\uXXXX`.
+     * Anything else after a backslash passes through as the char itself.
+     * Left-to-right, each escape consumed exactly once — the property
+     * the naive replace lacked.
+     */
+    private fun decodeRscLayer(text: String): String {
+        if (!text.contains('\\')) return text
+        val sb = StringBuilder(text.length)
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            if (c == '\\' && i + 1 < text.length) {
+                when (val n = text[i + 1]) {
+                    'n' -> { sb.append('\n'); i += 2 }
+                    'r' -> { sb.append('\r'); i += 2 }
+                    't' -> { sb.append('\t'); i += 2 }
+                    'b' -> { sb.append('\b'); i += 2 }
+                    'f' -> { sb.append('\u000C'); i += 2 }
+                    'u' -> {
+                        val code = if (i + 6 <= text.length) {
+                            text.substring(i + 2, i + 6).toIntOrNull(16)
+                        } else {
+                            null
+                        }
+                        if (code != null) {
+                            sb.append(code.toChar())
+                            i += 6
+                        } else {
+                            sb.append(n)
+                            i += 2
+                        }
+                    }
+                    else -> { sb.append(n); i += 2 }
+                }
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
     }
 
     /** String-aware balanced {...} capture starting at [start] (which must be '{'). */

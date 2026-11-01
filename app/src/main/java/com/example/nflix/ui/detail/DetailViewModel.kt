@@ -73,7 +73,7 @@ class DetailViewModel(
         }
         viewModelScope.launch {
             try {
-                val detail = when (item.sourceId) {
+                val rawDetail = when (item.sourceId) {
                     // Đợt 4: Phim/Anime go through the merged front
                     // (KKPhim + Cobe server groups); cobe-only titles
                     // route inside detailFor to the pure cobe detail.
@@ -89,6 +89,17 @@ class DetailViewModel(
                         Family.MANHWA -> app.netTruyen.detail(item.slug)
                         Family.TRUYEN -> app.truyenQq.detail(item.slug)
                     }
+                }
+                // Country-law fix: a Cobe anime title whose own cover
+                // art is dead at the source (measured: naruto-shippuden
+                // 404s everywhere on Cobe) gets the KKPhim poster as its
+                // last-resort cover — its own art stays primary.
+                val detail = if (item.family == Family.ANIME) {
+                    rawDetail.copy(
+                        item = app.animeCatalog.withPosterFallbackLoaded(rawDetail.item)
+                    )
+                } else {
+                    rawDetail
                 }
                 app.database.titleDao().upsert(detail.item.toEntity())
                 // Default server: prefer Thuyết minh per the user's settings default.
@@ -242,17 +253,22 @@ class DetailViewModel(
             }
             Family.ANIME -> {
                 // 1.2.0 (Khối B): related anime comes from the Cobe pool
-                // itself — same first genre NAME, Donghua exclusion on.
+                // itself — same first genre NAME; visible() applies the
+                // full tab law (Donghua exclusion + country gate).
                 val genreName = self.genres.firstOrNull { !it.equals("Hoạt hình", true) }
                     ?: self.genres.firstOrNull()
                     ?: return emptyList()
                 app.animeCatalog.warmDonghuaSlugs()
+                app.animeCatalog.ensureCountryPoolsLoaded()
                 val pool = (1..2).flatMap { p ->
                     app.animeCatalog.visible(app.animeCatalog.poolPage(p).first)
                 }
-                pool.filter {
+                val rel = pool.filter {
                     it.genres.any { g -> g.equals(genreName, ignoreCase = true) }
-                }
+                }.filter { it.slug != self.slug }.take(12)
+                // Same dead-cover fallback as the other pool surfaces.
+                app.animeCatalog.enrichPosterFallbacks(rel)
+                rel.map { app.animeCatalog.withPosterFallback(it) }
             }
             Family.DONGHUA -> {
                 val slug = detail.genreLinks.firstOrNull()?.second ?: return emptyList()

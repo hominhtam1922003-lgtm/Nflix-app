@@ -71,13 +71,17 @@ fun FallbackImage(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
-    title: String = ""
+    title: String = "",
+    extraFallback: String = ""
 ) {
-    val modelState = remember(primary, fallback) {
-        mutableStateOf(primary.ifBlank { fallback })
+    // Ordered, de-duplicated URL chain: the item's own art first, the
+    // cross-catalog fallback (extraFallback) strictly last.
+    val chain = remember(primary, fallback, extraFallback) {
+        listOf(primary, fallback, extraFallback).filter { it.isNotBlank() }.distinct()
     }
-    var failed by remember(primary, fallback) { mutableStateOf(false) }
-    var retryKey by remember(primary, fallback) { mutableIntStateOf(0) }
+    var index by remember(primary, fallback, extraFallback) { mutableIntStateOf(0) }
+    var failed by remember(primary, fallback, extraFallback) { mutableStateOf(false) }
+    var retryKey by remember(primary, fallback, extraFallback) { mutableIntStateOf(0) }
     Box(modifier = modifier) {
         if (failed) {
             DeadCoverPlaceholder(
@@ -85,20 +89,20 @@ fun FallbackImage(
                 modifier = Modifier.fillMaxSize(),
                 onRetry = {
                     failed = false
-                    modelState.value = primary.ifBlank { fallback }
+                    index = 0
                     retryKey++
                 }
             )
         } else {
             key(retryKey) {
                 AsyncImage(
-                    model = modelState.value,
+                    model = chain.getOrElse(index) { "" },
                     contentDescription = contentDescription,
                     contentScale = contentScale,
                     modifier = Modifier.fillMaxSize(),
                     onError = {
-                        if (modelState.value != fallback && fallback.isNotBlank()) {
-                            modelState.value = fallback
+                        if (index < chain.lastIndex) {
+                            index++
                         } else {
                             failed = true
                         }
@@ -256,7 +260,8 @@ fun PosterCard(
                 fallback = item.thumbUrl,
                 contentDescription = item.name,
                 modifier = Modifier.fillMaxSize(),
-                title = item.name
+                title = item.name,
+                extraFallback = item.posterFallbackUrl
             )
             if (item.isHot) {
                 PosterHotBadge(Modifier.align(Alignment.TopStart).padding(6.dp))
@@ -394,7 +399,8 @@ fun UpdatedRow(
                 fallback = item.thumbUrl,
                 contentDescription = item.name,
                 modifier = Modifier.fillMaxSize(),
-                title = item.name
+                title = item.name,
+                extraFallback = item.posterFallbackUrl
             )
         }
         Spacer(Modifier.width(12.dp))

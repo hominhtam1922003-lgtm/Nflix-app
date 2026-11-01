@@ -45,7 +45,7 @@ class NflixApp : Application(), ImageLoaderFactory {
 
     /** 1.2.0: Anime tab catalog rules over the Cobe animation pool. */
     val animeCatalog: com.example.nflix.data.AnimeCatalog by lazy {
-        com.example.nflix.data.AnimeCatalog(cobe, hhKungfu, settings)
+        com.example.nflix.data.AnimeCatalog(kkPhim, cobe, hhKungfu, settings)
     }
     val truyenQq: TruyenQqSource by lazy { TruyenQqSource() }
     val hhKungfu: HhKungfuSource by lazy { HhKungfuSource() }

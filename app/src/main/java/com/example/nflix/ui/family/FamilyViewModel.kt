@@ -608,6 +608,17 @@ class FamilyViewModel(
         }
         animePoolStarted = true
         _state.update { it.copy(loading = true) }
+        // Country pools warm in parallel (persisted sets land instantly;
+        // the first-run sweep then grows them country by country, Japan
+        // first). Every growth re-publishes: the country gate is
+        // default-deny, so titles appear as they become classified —
+        // western titles never flash in and vanish.
+        viewModelScope.launch {
+            app.animeCatalog.warmCountryPools {
+                publishAnime()
+                kickAnimeEnrichment()
+            }
+        }
         viewModelScope.launch {
             // Warm the Donghua slug pool BEFORE the first pool page is
             // published, so no donghua series flashes into the tab.
@@ -620,13 +631,16 @@ class FamilyViewModel(
     }
 
     /**
-     * Background genre enrichment (1.2.0 fix): pool listing records
-     * carry only the "hoat-hinh" umbrella category, so chips/filter run
-     * on by-slug data fetched behind the list — never blocking it. Each
-     * completed pass re-publishes, so genre chips appear and a selected
-     * genre's results fill in live; the loop only continues while pool
-     * pages that landed mid-pass still owe attempts (each slug is
-     * attempted at most once per process run, so this terminates).
+     * Background enrichment (1.2.0 fix + country-law fix): pool listing
+     * records carry only the "hoat-hinh" umbrella category, so genre
+     * chips/filter run on by-slug data fetched behind the list; the same
+     * round resolves KKPhim poster fallbacks for Cobe covers that are
+     * dead at the source. Both passes run ONLY over titles that pass
+     * visible() — nothing is fetched for titles the law hides. Each
+     * completed pass re-publishes, so chips and covers fill in live; the
+     * loop only continues while pool pages that landed mid-pass still
+     * owe attempts (each slug is attempted at most once per process
+     * run, so this terminates).
      */
     private fun kickAnimeEnrichment() {
         if (animeEnrichRunning) return
@@ -634,9 +648,15 @@ class FamilyViewModel(
         viewModelScope.launch {
             try {
                 while (true) {
-                    val changed = app.animeCatalog.enrichThinGenres(animePool.toList())
-                    if (changed) publishAnime()
-                    if (!app.animeCatalog.hasUnattemptedThin(animePool.toList())) break
+                    val vis = app.animeCatalog.visible(animePool.toList())
+                    val genresChanged = app.animeCatalog.enrichThinGenres(vis)
+                    val postersChanged = app.animeCatalog.enrichPosterFallbacks(vis)
+                    if (genresChanged || postersChanged) publishAnime()
+                    if (!app.animeCatalog.hasUnattemptedThin(vis) &&
+                        !app.animeCatalog.hasUnattemptedPoster(vis)
+                    ) {
+                        break
+                    }
                 }
             } finally {
                 animeEnrichRunning = false
@@ -645,6 +665,10 @@ class FamilyViewModel(
     }
 
     private suspend fun loadAnimePoolPages(count: Int) {
+        // The pool is kept RAW: the catalog law (donghua + country gate)
+        // is applied at read time in visible(), so titles classified
+        // later — while the country pools are still harvesting — join
+        // the tab without re-fetching their pool page.
         repeat(count) {
             if (animePoolNextPage > animePoolTotalPages) return
             val (items, total) = try {
@@ -653,18 +677,18 @@ class FamilyViewModel(
                 return
             }
             animePoolTotalPages = total
-            val visible = app.animeCatalog.visible(items)
             val known = animePool.map { it.id }.toSet()
-            animePool += visible.filter { it.id !in known }
+            animePool += items.filter { it.id !in known }
             animePoolNextPage++
         }
     }
 
     private fun animeFiltered(): List<TitleItem> {
         val f = _state.value.animeFilter
-        // Cross-page dedupe: the same show can surface under two slugs on
-        // different pool pages (per-page dedupe happens in visible()).
-        return app.animeCatalog.dedupeTitles(animePool).filter { item ->
+        // visible() applies the full tab law (donghua exclusion +
+        // country gate) and cross-page dedupe (the same show can
+        // surface under two slugs on different pool pages).
+        return app.animeCatalog.visible(animePool).filter { item ->
             // Category test runs on ENRICHED genres (AnimeCatalog cache):
             // raw pool records carry only the "hoat-hinh" umbrella.
             (f.category.isEmpty() ||
@@ -676,7 +700,7 @@ class FamilyViewModel(
 
     private fun publishAnime() {
         val filtered = animeFiltered()
-        val pool = app.animeCatalog.dedupeTitles(animePool)
+        val pool = app.animeCatalog.visible(animePool)
         // Chips = categories REALLY present in the loaded pool (minus the
         // hoat-hinh umbrella itself), with real counts behind the order.
         // Genres come from AnimeCatalog.genresOf: pool records enriched
@@ -698,10 +722,14 @@ class FamilyViewModel(
             .map { it.value.first to it.key }
         val years = pool.map { it.year }.filter { it > 0 }
             .distinct().sortedDescending()
+        // Display copies carry the KK poster fallback (when the
+        // enrichment cache has one) — the pool records themselves and
+        // the DB upsert keep the item's own Cobe art as primary.
+        val display = filtered.map { app.animeCatalog.withPosterFallback(it) }
         _state.update {
             it.copy(
-                posters = filtered,
-                rows = filtered,
+                posters = display,
+                rows = display,
                 rowsHasMore = animePoolNextPage <= animePoolTotalPages,
                 animeCategories = categories,
                 animeYears = years

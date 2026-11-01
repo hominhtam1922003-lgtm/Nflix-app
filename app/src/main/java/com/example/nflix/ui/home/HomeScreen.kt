@@ -331,7 +331,8 @@ private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -
             fallback = item.posterUrl,
             contentDescription = item.name,
             modifier = Modifier.fillMaxSize(),
-            title = item.name
+            title = item.name,
+            extraFallback = item.posterFallbackUrl
         )
         Box(
             modifier = Modifier

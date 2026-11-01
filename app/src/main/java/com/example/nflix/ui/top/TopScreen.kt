@@ -108,10 +108,13 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
                         .filter { it.family == Family.PHIM }.take(10)
                     Family.ANIME -> {
                         // 1.2.0 (Khối B): Top Anime comes from the Cobe
-                        // animation pool with the Donghua exclusion applied.
+                        // animation pool; the catalog law (Donghua
+                        // exclusion + country gate) applies via visible().
                         app.animeCatalog.warmDonghuaSlugs()
+                        app.animeCatalog.ensureCountryPoolsLoaded()
                         val (pool, _) = app.animeCatalog.poolPage(1)
                         app.animeCatalog.visible(pool).take(10)
+                            .map { app.animeCatalog.withPosterFallback(it) }
                     }
                     Family.DONGHUA -> app.hhKungfu.topViewed(1).take(10)
                     Family.MANHWA -> when (period) {
@@ -126,6 +129,26 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
                 // Only apply if the user is still on this family/period.
                 if (_state.value.familyIndex == familyIndex && _state.value.period == period) {
                     _state.update { it.copy(loading = false, items = items) }
+                }
+                if (families[familyIndex] == Family.ANIME) {
+                    // Background: resolve KK poster fallbacks for the
+                    // chart's Cobe covers and keep the country pools
+                    // harvesting for the other Anime surfaces.
+                    viewModelScope.launch {
+                        if (app.animeCatalog.enrichPosterFallbacks(items)) {
+                            val refreshed =
+                                items.map { app.animeCatalog.withPosterFallback(it) }
+                            cache[familyIndex to period] = refreshed
+                            if (_state.value.familyIndex == familyIndex &&
+                                _state.value.period == period
+                            ) {
+                                _state.update { it.copy(items = refreshed) }
+                            }
+                        }
+                    }
+                    viewModelScope.launch {
+                        app.animeCatalog.warmCountryPools { }
+                    }
                 }
             } catch (e: Exception) {
                 if (_state.value.familyIndex == familyIndex && _state.value.period == period) {
@@ -306,7 +329,8 @@ private fun RankRow(rank: Int, item: TitleItem, onClick: () -> Unit) {
                 contentDescription = item.name,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
-                title = item.name
+                title = item.name,
+                extraFallback = item.posterFallbackUrl
             )
         }
         Spacer(Modifier.width(12.dp))

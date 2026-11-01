@@ -121,7 +121,8 @@ fun DetailScreen(
                         fallback = dispItem.posterUrl,
                         contentDescription = dispItem.name,
                         modifier = Modifier.fillMaxSize(),
-                        title = dispItem.name
+                        title = dispItem.name,
+                        extraFallback = dispItem.posterFallbackUrl
                     )
                     Box(
                         modifier = Modifier.fillMaxSize().background(
