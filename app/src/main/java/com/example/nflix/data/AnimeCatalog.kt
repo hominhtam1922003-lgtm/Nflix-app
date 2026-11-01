@@ -194,7 +194,7 @@ class AnimeCatalog(
     /** Pool records still owed an enrichment attempt (drives re-kicks). */
     fun hasUnattemptedThin(items: List<TitleItem>): Boolean =
         items.any {
-            isThin(it) && it.slug !in genreCache && it.slug !in genreAttempted
+            isThin(it) && !genreCache.containsKey(it.slug) && it.slug !in genreAttempted
         }
 
     /**
@@ -206,7 +206,7 @@ class AnimeCatalog(
     suspend fun enrichThinGenres(items: List<TitleItem>): Boolean {
         ensureGenreCacheLoaded()
         val todo = items.asSequence()
-            .filter { isThin(it) && it.slug !in genreCache && it.slug !in genreAttempted }
+            .filter { isThin(it) && !genreCache.containsKey(it.slug) && it.slug !in genreAttempted }
             .map { it.slug }
             .distinct()
             .toList()
