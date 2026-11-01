@@ -39,6 +39,20 @@ data class TitleItem(
     val posterFallbackUrl: String = "",
     val quality: String = "",       // "FHD" / "HD" / "4K" / "" (no badge)
     val versionBadge: String = "",  // "TM" / "VS" / ""
+    /**
+     * V2 (A1): the source's own language descriptor, verbatim — KKPhim's
+     * lang_key set joined ("tm,vs") or Cobe's `language` string
+     * ("Vietsub + Thuyết Minh"). The Phim/Anime PHIÊN BẢN sheet group
+     * filters LOCALLY on this (the KKPhim API ignores its version=
+     * param — measured). Empty = the source said nothing; never guessed.
+     */
+    val languages: String = "",
+    /**
+     * V2 (A2): the source's own view counter for the Cobe view charts
+     * (view_day / view_week of the sorted search it came from). 0 = this
+     * item did not come from a view chart — the UI shows no number then.
+     */
+    val viewCount: Long = 0,
     val latestLabel: String = "",   // "Tập 19" / "Chap 88" / "Full"
     val episodeCount: Int = 0,      // newest episode/chapter number known
     val year: Int = 0,
@@ -68,7 +82,26 @@ data class EpisodeItem(
 data class ServerGroup(
     val name: String,               // "Thuyết Minh" / "Vietsub" / "Lồng Tiếng"
     val langKey: String = "",       // "tm" / "vs" / "lt"
-    val episodes: List<EpisodeItem> = emptyList()
+    val episodes: List<EpisodeItem> = emptyList(),
+    /**
+     * V2 (A7): Donghua stream-variant key — the player.php `type` of
+     * this group ("tiktik" / "pro" / "vip4k" / "vip4kv2"). The group's
+     * NAME carries the source's own label verbatim ("1080P V1",
+     * "4K V1", ...). Empty for every other source.
+     */
+    val variantKey: String = ""
+)
+
+/**
+ * V2 (A5): one cast member as the SOURCE publishes them — name plus the
+ * Cobe person slug and TMDB thumbnail when the record carries them.
+ * slug blank = no Cobe actor page is known for this name, so the UI
+ * keeps it as plain text (never a dead link).
+ */
+data class ActorRef(
+    val name: String,
+    val slug: String = "",
+    val thumb: String = ""
 )
 
 data class ChapterItem(
@@ -85,6 +118,8 @@ data class TitleDetail(
     val totalCount: Int = 0,        // total episodes/chapters when known
     val durationLabel: String = "",
     val actors: List<String> = emptyList(),
+    /** V2 (A5): actors with their Cobe page data when the record has it. */
+    val actorRefs: List<ActorRef> = emptyList(),
     val directors: List<String> = emptyList(),
     val servers: List<ServerGroup> = emptyList(),   // video families
     val chapters: List<ChapterItem> = emptyList(),  // comic families

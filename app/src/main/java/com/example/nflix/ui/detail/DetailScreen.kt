@@ -84,7 +84,9 @@ fun DetailScreen(
     onPlay: (TitleItem, EpisodeItem, ServerGroup) -> Unit,
     onRead: (TitleItem, ChapterItem) -> Unit,
     onOpenTitle: (TitleItem) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** V2 (A5): open an actor's page — only wired for actors carrying a Cobe slug. */
+    onOpenActor: (com.example.nflix.data.model.ActorRef) -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as NflixApp
@@ -529,10 +531,62 @@ fun DetailScreen(
                             }
                             if (d.actors.isNotEmpty()) {
                                 Spacer(Modifier.height(6.dp))
-                                Text(
-                                    "Diễn viên: ${d.actors.joinToString(", ")}",
-                                    color = NflixTextMuted, fontSize = 13.sp
-                                )
+                                // V2 (A5): actors the Cobe record gives
+                                // a page for become tappable violet names
+                                // opening their filmography; the rest stay
+                                // plain text — never a dead link.
+                                val refsByName = d.actorRefs.associateBy { it.name }
+                                val tappable = d.actors.mapNotNull { name ->
+                                    refsByName[name]?.takeIf { it.slug.isNotBlank() }
+                                }
+                                if (tappable.isEmpty()) {
+                                    Text(
+                                        "Diễn viên: ${d.actors.joinToString(", ")}",
+                                        color = NflixTextMuted, fontSize = 13.sp
+                                    )
+                                } else {
+                                    Text(
+                                        "Diễn viên",
+                                        color = NflixTextMuted, fontSize = 13.sp
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        d.actors.forEach { name ->
+                                            val ref = refsByName[name]
+                                            if (ref != null && ref.slug.isNotBlank()) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(50))
+                                                        .background(NflixVioletSoft)
+                                                        .clickable { onOpenActor(ref) }
+                                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                                ) {
+                                                    Text(
+                                                        name,
+                                                        color = NflixViolet,
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.Medium
+                                                    )
+                                                }
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier.padding(
+                                                        horizontal = 4.dp, vertical = 5.dp
+                                                    )
+                                                ) {
+                                                    Text(
+                                                        name,
+                                                        color = NflixTextMuted,
+                                                        fontSize = 13.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             if (d.directors.isNotEmpty()) {
                                 Text(
@@ -599,6 +653,18 @@ fun DetailScreen(
                                         (srvStatus?.describe() ?: "Chưa kiểm tra"),
                                     color = NflixTextMuted, fontSize = 12.sp
                                 )
+                                // V2 (0.2, sheet frame 7): mark the group
+                                // the settings' version priority defaults
+                                // to — the chip names the real rule.
+                                if (index == state.preferredServerIndex) {
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(
+                                        "Mặc định theo ưu tiên của bạn",
+                                        color = NflixViolet,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
                             }
                             if (index == state.serverIndex) {
                                 Icon(

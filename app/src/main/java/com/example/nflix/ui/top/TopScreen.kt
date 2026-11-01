@@ -69,8 +69,12 @@ data class TopUiState(
  * Tab "Top" (user chọn 2026-11-01 thay cho tab Tìm kiếm): bảng xếp hạng theo mục.
  * BXH thật: Manhwa từ NetTruyen (ngày/tuần/tháng/follow), Truyện từ widget
  * "TOP TRUYỆN ĐỌC NHIỀU" của TruyenQQ, Donghua từ trang /top-xem-nhieu (A6).
- * KKPhim không công bố lượt xem (sortField bị bỏ qua — đã đo) nên Phim/Anime
- * dùng danh sách thịnh hành và ghi nhãn "Đang thịnh hành" — không giả số liệu.
+ * V2 (A2): Phim/Anime nay có BXH lượt xem THẬT — Cobe's search accepts
+ * sort=view_day/view_week with really decreasing counters (measured
+ * 2026-11-01). The chart contains ONLY titles Cobe carries: KKPhim
+ * publishes no view counts (sortField ignored — measured), so no
+ * number is ever invented for a KK-only title; the header states the
+ * scope ("Lượt xem thật · Cobe").
  */
 class TopViewModel(private val app: NflixApp) : ViewModel() {
     private val _state = MutableStateFlow(TopUiState())
@@ -85,8 +89,16 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
 
     fun selectFamily(index: Int) {
         if (index == _state.value.familyIndex) return
-        _state.update { it.copy(familyIndex = index) }
-        load(index, _state.value.period)
+        // V2 (A2): the view charts only have 2 periods — a Manhwa
+        // period (Tháng/Theo dõi) must not leak into them.
+        val fam = families[index]
+        val period = if (fam == Family.PHIM || fam == Family.ANIME) {
+            _state.value.period.coerceIn(0, 1)
+        } else {
+            _state.value.period
+        }
+        _state.update { it.copy(familyIndex = index, period = period) }
+        load(index, period)
     }
 
     fun selectPeriod(period: Int) {
@@ -104,16 +116,28 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
         viewModelScope.launch {
             try {
                 val items = when (families[familyIndex]) {
-                    Family.PHIM -> app.mergedPhim.latestMerged(1)
-                        .filter { it.family == Family.PHIM }.take(10)
+                    Family.PHIM -> {
+                        // V2 (A2): the real Cobe view chart (day/week).
+                        // Scope: Cobe-carried titles only — KKPhim
+                        // publishes no view counts to rank by.
+                        app.cobe.searchByViews(
+                            weekly = period == 1, limit = 24,
+                            family = Family.PHIM
+                        ).take(10)
+                    }
                     Family.ANIME -> {
-                        // 1.2.0 (Khối B): Top Anime comes from the Cobe
-                        // animation pool; the catalog law (Donghua
-                        // exclusion + country gate) applies via visible().
+                        // V2 (A2): the same chart restricted to the
+                        // animation category, then the tab law applies
+                        // (country gate via visible()) — chart order is
+                        // preserved through the gate; 24 fetched so the
+                        // gate cannot starve the top-10.
                         app.animeCatalog.warmDonghuaSlugs()
                         app.animeCatalog.ensureCountryPoolsLoaded()
-                        val (pool, _) = app.animeCatalog.poolPage(1)
-                        app.animeCatalog.visible(pool).take(10)
+                        val chart = app.cobe.searchByViews(
+                            weekly = period == 1, limit = 24,
+                            family = Family.ANIME, animeOnly = true
+                        )
+                        app.animeCatalog.visible(chart).take(10)
                             .map { app.animeCatalog.withPosterFallback(it) }
                     }
                     Family.DONGHUA -> app.hhKungfu.topViewed(1).take(10)
@@ -249,6 +273,20 @@ fun TopScreen(onOpenTitle: (TitleItem) -> Unit) {
                 selectedIndex = state.period,
                 onSelect = { viewModel.selectPeriod(it) }
             )
+        } else if (family == Family.PHIM || family == Family.ANIME) {
+            // V2 (A2, sheet frame 2): segmented Hôm nay | Tuần over the
+            // real Cobe view chart; the note states the chart's scope.
+            FilterChips(
+                labels = listOf("Hôm nay", "Tuần"),
+                selectedIndex = state.period.coerceIn(0, 1),
+                onSelect = { viewModel.selectPeriod(it) }
+            )
+            Text(
+                "Lượt xem thật · Cobe",
+                color = NflixTextMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp)
+            )
         } else {
             Text(
                 when (family) {
@@ -287,7 +325,16 @@ fun TopScreen(onOpenTitle: (TitleItem) -> Unit) {
             }
             else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(state.items, key = { _, item -> item.id }) { index, item ->
-                    RankRow(rank = index + 1, item = item, onClick = { onOpenTitle(item) })
+                    RankRow(
+                        rank = index + 1,
+                        item = item,
+                        onClick = { onOpenTitle(item) },
+                        viewSuffix = when {
+                            item.viewCount <= 0 -> ""
+                            state.period == 1 -> "lượt xem tuần này"
+                            else -> "lượt xem hôm nay"
+                        }
+                    )
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -296,7 +343,12 @@ fun TopScreen(onOpenTitle: (TitleItem) -> Unit) {
 }
 
 @Composable
-private fun RankRow(rank: Int, item: TitleItem, onClick: () -> Unit) {
+private fun RankRow(
+    rank: Int,
+    item: TitleItem,
+    onClick: () -> Unit,
+    viewSuffix: String = ""
+) {
     val rankColor = when (rank) {
         1 -> NflixGold
         2 -> Color(0xFFC9C9D4)
@@ -351,6 +403,14 @@ private fun RankRow(rank: Int, item: TitleItem, onClick: () -> Unit) {
                 if (item.genres.isNotEmpty()) {
                     if (isNotEmpty()) append(" · ")
                     append(item.genres.take(2).joinToString(", "))
+                }
+                // V2 (A2): the source's own view counter of the chart
+                // this row came from — shown only when it exists.
+                if (item.viewCount > 0 && viewSuffix.isNotBlank()) {
+                    if (isNotEmpty()) append(" · ")
+                    append(com.example.nflix.ui.search.formatViewCount(item.viewCount))
+                    append(" ")
+                    append(viewSuffix)
                 }
             }
             if (meta.isNotBlank()) {

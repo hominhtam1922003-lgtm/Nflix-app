@@ -338,6 +338,56 @@ fun FamilyScreen(
             }
         }
 
+        // V2 (0.4, sheet frame 6): the same honesty for Phim / Anime /
+        // Donghua / Manhwa — a failed main load with nothing on screen
+        // is an explicit error + retry, never a silently empty tab.
+        if (family != Family.TRUYEN && state.familyError && !state.loading &&
+            state.posters.isEmpty() && state.rows.isEmpty()
+        ) {
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 32.dp, vertical = 36.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "Không tải được nội dung",
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Kiểm tra kết nối mạng rồi thử lại.",
+                        color = NflixTextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = { viewModel.retryFamily() },
+                        colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
+                        shape = RoundedCornerShape(50)
+                    ) { Text("Thử lại", color = Color.White) }
+                }
+            }
+        }
+
+        // V2 (0.4): Anime first-run — the country pools are still
+        // classifying, so an empty tab means "đang phân loại", not
+        // "không có gì". Shown only while nothing has landed yet.
+        if (family == Family.ANIME && state.animeClassifying && !state.loading &&
+            !state.familyError && state.rows.isEmpty()
+        ) {
+            item {
+                Text(
+                    "Đang phân loại kho Anime theo quốc gia — danh sách hiện dần.",
+                    color = NflixTextMuted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 32.dp, vertical = 24.dp)
+                )
+            }
+        }
+
         // Shelf 1 — posters
         if (state.posters.isNotEmpty()) {
             item {
@@ -549,6 +599,8 @@ private fun filterSummary(family: Family, state: FamilyUiState): String = when (
         KkPhimSource.CATEGORIES.firstOrNull { it.second == f.category }?.first?.let { parts += it }
         KkPhimSource.COUNTRIES.firstOrNull { it.second == f.country }?.first?.let { parts += it }
         if (f.year > 0) parts += f.year.toString()
+        com.example.nflix.data.VersionFilter.labelOf(f.version)
+            .takeIf { it.isNotEmpty() && f.version.isNotEmpty() }?.let { parts += it }
         statusLabel(f.status).takeIf { it.isNotEmpty() }?.let { parts += it }
         parts.joinToString(" · ")
     }
@@ -557,6 +609,8 @@ private fun filterSummary(family: Family, state: FamilyUiState): String = when (
         val parts = mutableListOf<String>()
         state.animeCategories.firstOrNull { it.second == f.category }?.first?.let { parts += it }
         if (f.year > 0) parts += f.year.toString()
+        com.example.nflix.data.VersionFilter.labelOf(f.version)
+            .takeIf { it.isNotEmpty() && f.version.isNotEmpty() }?.let { parts += it }
         statusLabel(f.status).takeIf { it.isNotEmpty() }?.let { parts += it }
         parts.joinToString(" · ")
     }
@@ -727,17 +781,24 @@ private fun PhimFilterSheet(
     var country by remember { mutableStateOf(current.country) }
     var year by remember { mutableIntStateOf(current.year) }
     var status by remember { mutableIntStateOf(current.status) }
+    var version by remember { mutableStateOf(current.version) }
     var query by remember { mutableStateOf("") }
     val years = listOf(0) + (2026 downTo 2015).toList()
 
     FilterSheetFrame(
         title = "Lọc phim",
         onReset = {
-            kind = "phim-bo"; category = ""; country = ""; year = 0; status = 0; query = ""
+            kind = "phim-bo"; category = ""; country = ""; year = 0; status = 0
+            version = ""; query = ""
         },
         onApply = {
             // "Tất cả" loại (kind = "") falls back to phim-bo listing.
-            onApply(PhimFilter(kind.ifEmpty { "phim-bo" }, category, country, year, status))
+            onApply(
+                PhimFilter(
+                    kind.ifEmpty { "phim-bo" }, category, country, year, status,
+                    version = version
+                )
+            )
         },
         onDismiss = onDismiss
     ) {
@@ -772,6 +833,16 @@ private fun PhimFilterSheet(
                 onSelect = { year = it.toIntOrNull() ?: 0 }
             )
         }
+        // V2 (A1, sheet frame 1): PHIÊN BẢN — local filter over the
+        // sources' own language descriptors (the KKPhim API ignores
+        // version=; Cobe's descriptor comes from its own records).
+        FilterSection("Phiên bản") {
+            FilterChipRow(
+                options = com.example.nflix.data.VersionFilter.OPTIONS,
+                selected = version,
+                onSelect = { version = it }
+            )
+        }
         FilterSection("Trạng thái") {
             StatusChips(status) { status = it }
         }
@@ -795,12 +866,20 @@ private fun AnimeFilterSheet(
     var category by remember { mutableStateOf(current.category) }
     var year by remember { mutableIntStateOf(current.year) }
     var status by remember { mutableIntStateOf(current.status) }
+    var version by remember { mutableStateOf(current.version) }
     var query by remember { mutableStateOf("") }
 
     FilterSheetFrame(
         title = "Lọc anime",
-        onReset = { category = ""; year = 0; status = 0; query = "" },
-        onApply = { onApply(AnimeFilter(category = category, year = year, status = status)) },
+        onReset = { category = ""; year = 0; status = 0; version = ""; query = "" },
+        onApply = {
+            onApply(
+                AnimeFilter(
+                    category = category, year = year, status = status,
+                    version = version
+                )
+            )
+        },
         onDismiss = onDismiss
     ) {
         if (categories.size > 18) {
@@ -819,6 +898,15 @@ private fun AnimeFilterSheet(
                 options = listOf("0" to "Tất cả") + years.map { y -> y.toString() to y.toString() },
                 selected = year.toString(),
                 onSelect = { year = it.toIntOrNull() ?: 0 }
+            )
+        }
+        // V2 (A1, sheet frame 1): PHIÊN BẢN — local over the pool that
+        // already passed the country gate.
+        FilterSection("Phiên bản") {
+            FilterChipRow(
+                options = com.example.nflix.data.VersionFilter.OPTIONS,
+                selected = version,
+                onSelect = { version = it }
             )
         }
         FilterSection("Trạng thái") {

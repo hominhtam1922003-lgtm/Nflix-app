@@ -59,9 +59,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSink
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.PlayerView
+import com.example.nflix.data.AdBlock
 import com.example.nflix.data.AppSettings
 import com.example.nflix.player.PlaybackKind
 import com.example.nflix.player.PlayerUiState
@@ -231,10 +234,21 @@ private fun PlayerScreen(
         ended = false
         playbackError = null
         reportSaved = false
-        val dataSource = DefaultHttpDataSource.Factory()
+        val upstreamFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(mapOf("Referer" to "https://phimapi.com/"))
+        // V2 (A6): stream through the shared write-through cache — the
+        // exact source bytes land on disk as they play (no quality
+        // downgrade anywhere), and the next-episode prefetcher warms
+        // this same cache so episode switches start locally.
+        val appRef = context.applicationContext as NflixApp
+        val dataSource = CacheDataSource.Factory()
+            .setCache(appRef.videoCache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setCacheWriteDataSinkFactory(
+                CacheDataSink.Factory().setCache(appRef.videoCache)
+            )
         val source = HlsMediaSource.Factory(dataSource)
             .createMediaSource(MediaItem.fromUri(ep.streamUrl))
         exo.setMediaSource(source)
@@ -326,6 +340,12 @@ private fun PlayerScreen(
             ticks++
             if (ticks % 10 == 0 && durationMs > 0) {
                 viewModel.saveProgress(positionMs, durationMs)
+            }
+            // V2 (A6): past the halfway point, warm the next episode's
+            // head in the shared cache (direct HLS only — the VM no-ops
+            // for embeds and after one attempt per episode).
+            if (durationMs > 0 && positionMs * 2 >= durationMs) {
+                viewModel.prefetchNext()
             }
             delay(500)
         }
@@ -659,6 +679,15 @@ private fun EmbedPlayer(
     // retry, switch server, report. Sub-resource errors (ad images, XHR
     // inside the page) must NOT trigger it — isForMainFrame guards that.
     var embedError by remember(state.embedUrl) { mutableStateOf<String?>(null) }
+    // V2 (0.1): the ad-block setting, REALLY wired — sub-requests to
+    // known ad/gambling domains are answered with an empty response
+    // before they ever leave the WebView. Live value (a settings
+    // change takes effect on the next embed open).
+    val embedApp = context.applicationContext as NflixApp
+    var adBlockOn by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        embedApp.settings.flow.collect { adBlockOn = it.adBlock }
+    }
     var showServers by remember { mutableStateOf(false) }
     var reportSaved by remember(state.embedUrl) { mutableStateOf(false) }
     val embedScope = androidx.compose.runtime.rememberCoroutineScope()
@@ -672,6 +701,19 @@ private fun EmbedPlayer(
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
                         webViewClient = object : WebViewClient() {
+                            override fun shouldInterceptRequest(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): WebResourceResponse? {
+                                // V2 (0.1): known ad/gambling hosts get
+                                // an empty body; everything else falls
+                                // through to the real network untouched.
+                                if (adBlockOn) {
+                                    AdBlock.intercept(request)?.let { return it }
+                                }
+                                return super.shouldInterceptRequest(view, request)
+                            }
+
                             override fun onReceivedError(
                                 view: WebView?,
                                 request: WebResourceRequest?,

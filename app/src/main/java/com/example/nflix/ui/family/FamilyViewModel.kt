@@ -10,6 +10,7 @@ import com.example.nflix.data.model.STATUS_COMPLETED
 import com.example.nflix.data.model.STATUS_ONGOING
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.model.matchesStatus
+import com.example.nflix.data.matchesVersion
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.toEntity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,17 +22,19 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Phim-tab filter: kind + category + country + year + status. Empty/0 = all. */
+/** Phim-tab filter: kind + category + country + year + status + version. Empty/0 = all. */
 data class PhimFilter(
     val kind: String = "phim-bo",
     val category: String = "",
     val country: String = "",
     val year: Int = 0,
-    val status: Int = 0
+    val status: Int = 0,
+    /** V2 (A1): PHIÊN BẢN key (VersionFilter) — filtered LOCALLY. */
+    val version: String = ""
 ) {
     val isDefault: Boolean
         get() = kind == "phim-bo" && category.isEmpty() && country.isEmpty() &&
-            year == 0 && status == 0
+            year == 0 && status == 0 && version.isEmpty()
 }
 
 /**
@@ -42,10 +45,12 @@ data class PhimFilter(
 data class AnimeFilter(
     val category: String = "",
     val year: Int = 0,
-    val status: Int = 0
+    val status: Int = 0,
+    /** V2 (A1): PHIÊN BẢN key (VersionFilter) — filtered LOCALLY on the gated pool. */
+    val version: String = ""
 ) {
     val isDefault: Boolean
-        get() = category.isEmpty() && year == 0 && status == 0
+        get() = category.isEmpty() && year == 0 && status == 0 && version.isEmpty()
 }
 
 /**
@@ -108,7 +113,20 @@ data class FamilyUiState(
     /** C3: the Truyện "Mới tinh" shelf load failed. */
     val truyenFreshError: Boolean = false,
     /** C3: appending the next Truyện rows page failed (retry keeps hasMore). */
-    val truyenRowsError: Boolean = false
+    val truyenRowsError: Boolean = false,
+    /**
+     * V2 (0.4): the tab's main load FAILED for the four families that
+     * used to swallow errors (Phim/Anime/Donghua/Manhwa). FamilyScreen
+     * shows the frame-6 error block + Thử lại while this is set and the
+     * tab has nothing to show.
+     */
+    val familyError: Boolean = false,
+    /**
+     * V2 (0.4): Anime only — the country pools are still harvesting, so
+     * the tab is classifying; the screen explains the gradual fill-in
+     * instead of looking broken/empty.
+     */
+    val animeClassifying: Boolean = false
 )
 
 class FamilyViewModel(
@@ -129,6 +147,8 @@ class FamilyViewModel(
     private var animePoolTotalPages = Int.MAX_VALUE
     private var animePoolStarted = false
     private var animeEnrichRunning = false
+    /** V2 (0.4): the pool's first page fetch failed (nothing to show). */
+    private var animePoolFailed = false
 
     // --- Manhwa local index (Khối C) ---
     private var manhwaIndex: List<ManhwaIndexEntry>? = null
@@ -203,6 +223,9 @@ class FamilyViewModel(
         private val DAY_KEYS = listOf("thu-2", "thu-3", "thu-4", "thu-5", "thu-6", "thu-7", "chu-nhat")
 
         private const val MANHWA_WINDOW_STEP = 40
+
+        /** V2 (A1): raw source pages scanned per version-filter round. */
+        private const val PHIM_VERSION_SCAN_PAGES = 3
 
         /** date param for a day-chip index: 0 = today (VN), 1..7 = Thứ 2..Chủ nhật. */
         fun dayKey(index: Int): String {
@@ -290,6 +313,39 @@ class FamilyViewModel(
         if (family != Family.TRUYEN) return
         _state.update { it.copy(truyenRowsError = false) }
         loadMoreRows()
+    }
+
+    /**
+     * V2 (0.4): the frame-6 "Thử lại" for the four families that used to
+     * swallow load failures — reruns the family's own loaders.
+     */
+    fun retryFamily() {
+        when (family) {
+            Family.TRUYEN -> retryTruyen()
+            Family.PHIM -> {
+                _state.update { it.copy(familyError = false) }
+                applyPhimFilter(_state.value.phimFilter)
+                loadComingSoon()
+            }
+            Family.ANIME -> {
+                animePoolStarted = false
+                animePoolFailed = false
+                _state.update { it.copy(familyError = false, loading = true) }
+                startAnimePool()
+            }
+            Family.DONGHUA -> {
+                _state.update { it.copy(familyError = false) }
+                selectContext(_state.value.contextIndex)
+                loadDonghuaRows()
+                loadDonghuaGenres()
+                loadDonghuaTrending()
+            }
+            Family.MANHWA -> {
+                _state.update { it.copy(familyError = false) }
+                loadManhwaLists()
+                loadFreshShelf()
+            }
+        }
     }
 
     /** A4: the "Sắp chiếu" shelf — page 1 of KKPhim's coming-soon list is enough for a shelf. */
@@ -393,7 +449,7 @@ class FamilyViewModel(
                     // Donghua rows are owned by loadDonghuaRows/loadMoreRows —
                     // a day-chip switch must not clobber them with a stale copy.
                     if (family == Family.DONGHUA) {
-                        it.copy(loading = false, posters = posters)
+                        it.copy(loading = false, posters = posters, familyError = false)
                     } else if (family == Family.TRUYEN) {
                         // C3: a loaded Truyện tab clears its error state and
                         // publishes which host served it + how long it took.
@@ -412,18 +468,20 @@ class FamilyViewModel(
                             posters = posters,
                             rows = rows,
                             rowsPage = 1,
-                            rowsHasMore = rowsHasMoreFor(index)
+                            rowsHasMore = rowsHasMoreFor(index),
+                            familyError = false
                         )
                     }
                 }
             } catch (e: Exception) {
                 _state.update {
                     // C3: for Truyện an exception means "load failed", never
-                    // silently an empty tab (K4).
+                    // silently an empty tab (K4). V2 (0.4) extends the same
+                    // honesty to the other families via familyError.
                     if (family == Family.TRUYEN) {
                         it.copy(loading = false, truyenError = true).withTruyenStatus()
                     } else {
-                        it.copy(loading = false)
+                        it.copy(loading = false, familyError = true)
                     }
                 }
             }
@@ -505,7 +563,14 @@ class FamilyViewModel(
             _state.update { it.copy(posters = window, rows = window, rowsHasMore = hasMore) }
             return
         }
-        if (s.rows.isEmpty()) return
+        // V2 (A1): under a Phim version filter the first round can be
+        // dry while later rounds still hold matches — paging must be
+        // allowed to continue from an empty grid in that one case.
+        if (s.rows.isEmpty() &&
+            !(family == Family.PHIM && s.phimFilter.version.isNotEmpty() && phimVersionRawMore)
+        ) {
+            return
+        }
         _state.update { it.copy(loadingMore = true) }
         viewModelScope.launch {
             val nextPage = s.rowsPage + 1
@@ -529,6 +594,12 @@ class FamilyViewModel(
                     // instead of swallowing the failure as "no more rows".
                     rowsHasMore = if (failed && family == Family.TRUYEN) {
                         it.rowsHasMore
+                    } else if (family == Family.PHIM &&
+                        _state.value.phimFilter.version.isNotEmpty()
+                    ) {
+                        // V2 (A1): a dry version round is not the end —
+                        // paging continues while raw source pages remain.
+                        phimVersionRawMore
                     } else {
                         more.isNotEmpty()
                     },
@@ -542,7 +613,31 @@ class FamilyViewModel(
     // PHIM (Khối A — merged KKPhim + Cobe catalog)
     // ------------------------------------------------------------------
 
-    private suspend fun fetchPhim(filter: PhimFilter, page: Int): List<TitleItem> =
+    /** True while the last version-filter round still had raw source pages. */
+    private var phimVersionRawMore = false
+
+    /**
+     * V2 (A1): with a PHIÊN BẢN version set, one "page" of results is a
+     * ROUND of [PHIM_VERSION_SCAN_PAGES] raw source pages filtered
+     * locally (the Cobe filtered-merge precedent) — version density
+     * varies, and a single raw page would starve the grid. The KKPhim
+     * API ignores version= entirely, so the server is never asked.
+     */
+    private suspend fun fetchPhim(filter: PhimFilter, page: Int): List<TitleItem> {
+        if (filter.version.isEmpty()) return fetchPhimRaw(filter, page)
+        val raw = mutableListOf<TitleItem>()
+        val first = (page - 1) * PHIM_VERSION_SCAN_PAGES + 1
+        for (p in first until first + PHIM_VERSION_SCAN_PAGES) {
+            val chunk = fetchPhimRaw(filter, p)
+            if (chunk.isEmpty()) break
+            raw += chunk
+        }
+        phimVersionRawMore = raw.isNotEmpty()
+        return raw.filter { it.matchesVersion(filter.version) }
+            .distinctBy { it.id }
+    }
+
+    private suspend fun fetchPhimRaw(filter: PhimFilter, page: Int): List<TitleItem> =
         if (filter.kind == "chieu-rap" && filter.category.isEmpty() &&
             filter.country.isEmpty() && filter.year == 0
         ) {
@@ -574,7 +669,8 @@ class FamilyViewModel(
                             posters = posters,
                             rows = rows,
                             rowsPage = 1,
-                            rowsHasMore = rows.isNotEmpty()
+                            rowsHasMore = rows.isNotEmpty(),
+                            familyError = false
                         )
                     }
                 } else {
@@ -586,12 +682,18 @@ class FamilyViewModel(
                             posters = list,
                             rows = list,
                             rowsPage = 1,
-                            rowsHasMore = list.isNotEmpty()
+                            // V2 (A1): under a version filter a dry
+                            // first round can still have later matches.
+                            rowsHasMore = list.isNotEmpty() ||
+                                (filter.version.isNotEmpty() && phimVersionRawMore),
+                            familyError = false
                         )
                     }
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false) }
+                // V2 (0.4): a failed Phim load is an error state, not a
+                // silently empty tab.
+                _state.update { it.copy(loading = false, familyError = true) }
             }
         }
     }
@@ -624,7 +726,14 @@ class FamilyViewModel(
             // published, so no donghua series flashes into the tab.
             app.animeCatalog.warmDonghuaSlugs()
             loadAnimePoolPages(1)
-            _state.update { it.copy(loading = false) }
+            _state.update {
+                it.copy(
+                    loading = false,
+                    // V2 (0.4): first page failed and the pool is empty
+                    // → a real error state with Thử lại, not a blank tab.
+                    familyError = animePoolFailed && animePool.isEmpty()
+                )
+            }
             publishAnime()
             kickAnimeEnrichment()
         }
@@ -674,6 +783,11 @@ class FamilyViewModel(
             val (items, total) = try {
                 app.animeCatalog.poolPage(animePoolNextPage)
             } catch (e: Exception) {
+                // V2 (0.4): remember a first-page failure so the tab can
+                // show its error state instead of a permanent blank.
+                if (animePoolNextPage == 1 && animePool.isEmpty()) {
+                    animePoolFailed = true
+                }
                 return
             }
             animePoolTotalPages = total
@@ -694,7 +808,9 @@ class FamilyViewModel(
             (f.category.isEmpty() ||
                 app.animeCatalog.genresOf(item).any { it.second == f.category }) &&
                 (f.year == 0 || item.year == f.year) &&
-                item.matchesStatus(f.status)
+                item.matchesStatus(f.status) &&
+                // V2 (A1): PHIÊN BẢN — local, on the gated pool only.
+                item.matchesVersion(f.version)
         }
     }
 
@@ -732,7 +848,12 @@ class FamilyViewModel(
                 rows = display,
                 rowsHasMore = animePoolNextPage <= animePoolTotalPages,
                 animeCategories = categories,
-                animeYears = years
+                animeYears = years,
+                // V2 (0.4): real content clears the error state; while
+                // the country pools still harvest, the screen explains
+                // the gradual fill-in.
+                familyError = if (display.isNotEmpty()) false else it.familyError,
+                animeClassifying = !app.animeCatalog.countryPoolsReady()
             )
         }
         if (filtered.isNotEmpty()) {
@@ -771,12 +892,21 @@ class FamilyViewModel(
                 _state.update {
                     // Browse modes (genre / status) own the rows — do not clobber them.
                     if (it.donghuaGenre == null && it.donghuaStatus == 0) {
-                        it.copy(rows = rows, rowsPage = 1, rowsHasMore = true)
+                        it.copy(
+                            rows = rows, rowsPage = 1, rowsHasMore = true,
+                            familyError = false
+                        )
                     } else {
                         it
                     }
                 }
-            } catch (e: Exception) { /* shelf stays hidden */ }
+            } catch (e: Exception) {
+                // V2 (0.4): the rows are this tab's main content — a
+                // failure with nothing on screen is an error state.
+                if (_state.value.rows.isEmpty()) {
+                    _state.update { it.copy(familyError = true) }
+                }
+            }
         }
     }
 
@@ -854,11 +984,13 @@ class FamilyViewModel(
                         posters = list,
                         rows = list,
                         rowsPage = 1,
-                        rowsHasMore = list.isNotEmpty()
+                        rowsHasMore = list.isNotEmpty(),
+                        familyError = false
                     )
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false) }
+                // V2 (0.4): a failed browse load is an error state.
+                _state.update { it.copy(loading = false, familyError = true) }
             }
         }
     }
@@ -883,7 +1015,7 @@ class FamilyViewModel(
     }
 
     private fun loadManhwaLists() {
-        _state.update { it.copy(loading = true, rowsPage = 1) }
+        _state.update { it.copy(loading = true, rowsPage = 1, familyError = false) }
         viewModelScope.launch {
             try {
                 when {
@@ -935,7 +1067,8 @@ class FamilyViewModel(
                     }
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false) }
+                // V2 (0.4): a failed Manhwa load is an error state.
+                _state.update { it.copy(loading = false, familyError = true) }
             }
         }
     }

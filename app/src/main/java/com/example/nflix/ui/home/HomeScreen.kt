@@ -128,6 +128,18 @@ fun HomeScreen(
             )
             return
         }
+        "collection" -> {
+            // V2 (A3): the tapped Cobe collection opens as a plain grid.
+            val col = state.selectedCollection
+            TitleGridScreen(
+                title = col?.name ?: "Bộ sưu tập",
+                items = col?.items ?: emptyList(),
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
     }
 
     LazyColumn(modifier = modifier.fillMaxSize().background(NflixBackground)) {
@@ -180,6 +192,38 @@ fun HomeScreen(
             item {
                 Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = NflixViolet)
+                }
+            }
+        }
+
+        // V2 (0.4, sheet frame 6): every remote shelf failed — say so
+        // and offer a retry instead of a silent near-empty page.
+        if (state.loadError) {
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "Không tải được nội dung",
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Kiểm tra kết nối mạng rồi thử lại.",
+                        color = NflixTextMuted,
+                        fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = { viewModel.retry() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = NflixViolet,
+                            contentColor = Color.White
+                        )
+                    ) { Text("Thử lại") }
                 }
             }
         }
@@ -252,6 +296,49 @@ fun HomeScreen(
                         onAction = { showAll = "latest" },
                         coverMeta = true
                     )
+                }
+            }
+        }
+
+        // V2 (A3, sheet frame 3): "Bộ sưu tập" — Cobe's editorial
+        // collections as wide cards (real name + real title count from
+        // the source payload). Not a settings shelf: it renders after
+        // the configurable shelves whenever Cobe returned usable lists.
+        if (state.collections.isNotEmpty()) {
+            item {
+                Column(modifier = Modifier.padding(top = 6.dp)) {
+                    SectionHeader("Bộ sưu tập")
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(state.collections, key = { it.name }) { col ->
+                            Column(
+                                modifier = Modifier.width(210.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(NflixSurface)
+                                    .clickable {
+                                        viewModel.selectCollection(col)
+                                        showAll = "collection"
+                                    }
+                                    .padding(14.dp)
+                            ) {
+                                Text(
+                                    col.name,
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "${col.items.size} tựa",
+                                    color = NflixTextMuted,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

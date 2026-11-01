@@ -37,7 +37,18 @@ data class HomeUiState(
     /** B1: personalised picks from the user's most-watched genre. */
     val forYouList: List<TitleItem> = emptyList(),
     val forYouTitle: String = "Dành cho bạn",
-    val shelves: List<String> = listOf("continue", "today", "suggested", "foryou", "latest")
+    val shelves: List<String> = listOf("continue", "today", "suggested", "foryou", "latest"),
+    /**
+     * V2 (0.4): true when EVERY remote shelf failed and nothing remote
+     * loaded — Home shows the frame-6 error block (message + Thử lại)
+     * instead of a silently near-empty page. A single failed shelf
+     * still just hides, as before.
+     */
+    val loadError: Boolean = false,
+    /** V2 (A3): Cobe editorial collections for the "Bộ sưu tập" shelf. */
+    val collections: List<com.example.nflix.data.source.CobeCollection> = emptyList(),
+    /** The collection whose grid is open (set when its card is tapped). */
+    val selectedCollection: com.example.nflix.data.source.CobeCollection? = null
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -54,6 +65,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         loadShelves()
         loadToday()
         loadForYou()
+        loadCollections()
         viewModelScope.launch {
             nflix.settings.flow.collect { s ->
                 // One-time 1.1.0 merge: lists saved before 1.1.0 lack the
@@ -77,6 +89,37 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // V2 (0.4): per-loader failure flags. A shelf failing alone still
+    // just hides (its content is optional), but when hero + latest +
+    // suggested ALL fail the page itself is broken — that case must
+    // surface as an error with a retry, never as a quiet empty Home.
+    private var heroFailed = false
+    private var latestFailed = false
+    private var suggestedFailed = false
+
+    private fun refreshLoadError() {
+        _state.update { st ->
+            st.copy(
+                loadError = heroFailed && latestFailed && suggestedFailed &&
+                    st.hero == null && st.latestList.isEmpty() &&
+                    st.suggestedList.isEmpty()
+            )
+        }
+    }
+
+    /** V2 (0.4): the frame-6 "Thử lại" — reruns every Home loader. */
+    fun retry() {
+        heroFailed = false
+        latestFailed = false
+        suggestedFailed = false
+        _state.update { it.copy(loading = true, loadError = false) }
+        loadHero()
+        loadShelves()
+        loadToday()
+        loadForYou()
+        loadCollections()
+    }
+
     private fun loadShelves() {
         // 1.2.0 (Khối A): Home's Phim shelves read the MERGED catalog
         // (KKPhim + Cobe union) like the Phim tab does.
@@ -84,16 +127,57 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val latest = nflix.mergedPhim.latestMerged(page = 1)
                 db.titleDao().upsertAll(latest.map { it.toEntity() })
+                latestFailed = false
                 _state.update { it.copy(latestList = latest) }
-            } catch (e: Exception) { /* shelf stays hidden */ }
+            } catch (e: Exception) {
+                latestFailed = true
+            }
+            refreshLoadError()
         }
         viewModelScope.launch {
             try {
                 val suggested = nflix.mergedPhim.byKindMerged("phim-le", page = 1, limit = 12)
                 db.titleDao().upsertAll(suggested.map { it.toEntity() })
+                suggestedFailed = false
                 _state.update { it.copy(suggestedList = suggested) }
+            } catch (e: Exception) {
+                suggestedFailed = true
+            }
+            refreshLoadError()
+        }
+    }
+
+    /**
+     * V2 (A3): the "Bộ sưu tập" shelf — Cobe's editorial homepage
+     * collections. Lists duplicating shelves Home already has (charts,
+     * sắp chiếu, chiếu rạp, phim lẻ/bộ rails, mới nhất) are dropped by
+     * name; the rest render as wide cards (name + real title count)
+     * opening the collection's own grid. A Cobe failure just hides the
+     * shelf — Home's other content is unaffected.
+     */
+    private fun loadCollections() {
+        viewModelScope.launch {
+            try {
+                val dupHints = listOf(
+                    "top", "hot", "xem nhiều", "bảng xếp hạng", "sắp chiếu",
+                    "chiếu rạp", "phim lẻ", "phim bộ", "mới nhất", "mới cập nhật",
+                    "đang chiếu", "thịnh hành"
+                )
+                val cols = nflix.cobe.homepageLists().filter { c ->
+                    c.items.size >= 4 &&
+                        dupHints.none { hint -> c.name.lowercase().contains(hint) }
+                }.take(8)
+                if (cols.isNotEmpty()) {
+                    db.titleDao().upsertAll(cols.flatMap { it.items }.map { it.toEntity() })
+                    _state.update { it.copy(collections = cols) }
+                }
             } catch (e: Exception) { /* shelf stays hidden */ }
         }
+    }
+
+    /** V2 (A3): remember which collection the user opened for its grid. */
+    fun selectCollection(c: com.example.nflix.data.source.CobeCollection) {
+        _state.update { it.copy(selectedCollection = c) }
     }
 
     /**
@@ -238,12 +322,15 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val trending = nflix.mergedPhim.byKindMerged("phim-bo", page = 1, limit = 12)
                 db.titleDao().upsertAll(trending.map { it.toEntity() })
+                heroFailed = false
                 _state.update {
                     it.copy(loading = false, hero = trending.firstOrNull(), heroList = trending.take(8))
                 }
             } catch (e: Exception) {
+                heroFailed = true
                 _state.update { it.copy(loading = false) }
             }
+            refreshLoadError()
         }
     }
 

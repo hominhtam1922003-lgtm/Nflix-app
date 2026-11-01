@@ -64,17 +64,31 @@ private data class TabSpec(val label: String, val iconRes: Int)
 
 /**
  * 1.1.1 (N4): THE default-server rule, shared by every quick-play entry
- * point — the same rule Detail applies (DetailViewModel): the pool's
- * first Thuyết Minh group when one exists, else the first group in pool
+ * point — the same rule Detail applies (DetailViewModel): the preferred
+ * version's first group when one exists, else the first group in pool
  * order; the remaining groups follow in pool order. Quick-play paths
  * used to pick "the fullest server by episode count", which steered
  * playback into whichever source padded its list most — often a cobe
  * "#1" embed — instead of the default the Detail screen would show.
+ *
+ * V2 (0.2): the preference is no longer hard-coded to Thuyết minh — it
+ * is the user's "Ưu tiên bản dịch" setting, via the ONE shared order
+ * function [versionPriorityOrder].
  */
-private fun defaultServerOrder(servers: List<ServerGroup>): List<ServerGroup> {
+private fun defaultServerOrder(
+    servers: List<ServerGroup>,
+    priority: String = "TM"
+): List<ServerGroup> {
     if (servers.size <= 1) return servers
-    val idx = servers.indexOfFirst { it.langKey == "tm" }.takeIf { it >= 0 } ?: 0
-    if (idx == 0) return servers
+    var idx = -1
+    for (key in com.example.nflix.ui.detail.versionPriorityOrder(priority)) {
+        val i = servers.indexOfFirst { it.langKey == key }
+        if (i >= 0) {
+            idx = i
+            break
+        }
+    }
+    if (idx <= 0) return servers
     return listOf(servers[idx]) + servers.filterIndexed { i, _ -> i != idx }
 }
 
@@ -156,6 +170,10 @@ private fun NflixShell() {
     var selected by remember { mutableIntStateOf(0) }
     var familyRoute by remember { mutableStateOf<Family?>(null) }
     var detailItem by remember { mutableStateOf<TitleItem?>(null) }
+    /** V2 (A5): the actor page stacked above detail. */
+    var actorRoute by remember {
+        mutableStateOf<com.example.nflix.data.model.ActorRef?>(null)
+    }
     var readerRequest by remember { mutableStateOf<Pair<TitleItem, ChapterItem>?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -231,9 +249,16 @@ private fun NflixShell() {
                         if (chapter != null) readChapter(item, chapter) else openTitle(item)
                     }
                     else -> {
-                        // N4: default server by the shared rule, newest
-                        // episode OF THAT server (unchanged behavior).
-                        val server = defaultServerOrder(detail.servers).firstOrNull()
+                        // N4 + V2 (0.2): default server by the shared
+                        // rule — now driven by the user's version
+                        // priority setting — newest episode OF THAT
+                        // server (unchanged behavior).
+                        val priority = try {
+                            app.settings.flow.first().versionPriority
+                        } catch (e: Exception) {
+                            "TM"
+                        }
+                        val server = defaultServerOrder(detail.servers, priority).firstOrNull()
                         val episode = server?.episodes?.maxByOrNull { it.number }
                         if (server != null && episode != null) playVideo(item, episode, server)
                         else openTitle(item)
@@ -260,6 +285,17 @@ private fun NflixShell() {
             )
             return
         }
+        actorRoute != null -> {
+            // V2 (A5): actor page above detail — back pops the actor
+            // layer only, returning to the title it came from.
+            BackHandler { actorRoute = null }
+            com.example.nflix.ui.detail.ActorScreen(
+                actor = actorRoute!!,
+                onBack = { actorRoute = null },
+                onOpenTitle = openTitle
+            )
+            return
+        }
         detailItem != null -> {
             BackHandler { detailItem = null }
             DetailScreen(
@@ -267,7 +303,8 @@ private fun NflixShell() {
                 onBack = { detailItem = null },
                 onPlay = playVideo,
                 onRead = readChapter,
-                onOpenTitle = openTitle
+                onOpenTitle = openTitle,
+                onOpenActor = { actorRoute = it }
             )
             return
         }

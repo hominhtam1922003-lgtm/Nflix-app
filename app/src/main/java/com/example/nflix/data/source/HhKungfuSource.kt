@@ -30,6 +30,27 @@ class HhKungfuSource(
 ) {
     companion object {
         const val SOURCE_ID = "hhkungfu"
+
+        /**
+         * V2 (A7): the watch page's own stream variants, in the page's
+         * own order, with the SOURCE'S OWN labels verbatim — the page
+         * ships four player buttons (data-type tiktik/pro/vip4k/
+         * vip4kv2) labeled "1080P V1 · 1080P V2 · 4K V1 · 4K V2".
+         * Measured 2026-11-01: player.php returns a DIFFERENT embed
+         * per type (the 4K pair lives under /embed/vt/, the 1080P pair
+         * under /embed/v/). The labels are the source's claim, carried
+         * as-is — the app never invents a quality label of its own.
+         * (key = player.php `type`, value = the source's button label)
+         */
+        val STREAM_VARIANTS = listOf(
+            "tiktik" to "1080P V1",
+            "pro" to "1080P V2",
+            "vip4k" to "4K V1",
+            "vip4kv2" to "4K V2"
+        )
+
+        /** Default variant when a group carries no explicit key. */
+        const val DEFAULT_VARIANT = "pro"
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -239,7 +260,23 @@ class HhKungfuSource(
             }
             episodes.sortBy { it.number }
             if (episodes.isNotEmpty()) {
-                servers.add(ServerGroup(serverName, langKey, episodes))
+                // V2 (A7): ONE episode list, FOUR stream variants — the
+                // detail page carries a single locator set; the variant
+                // is a player.php `type` chosen at resolve time. Emit
+                // one group per variant, named with the source's own
+                // button labels ("<lang> · 1080P V1" ... "<lang> · 4K
+                // V2"), so the server sheet offers exactly what the
+                // source's watch page offers.
+                for ((variantKey, variantLabel) in STREAM_VARIANTS) {
+                    servers.add(
+                        ServerGroup(
+                            name = "$serverName · $variantLabel",
+                            langKey = langKey,
+                            episodes = episodes,
+                            variantKey = variantKey
+                        )
+                    )
+                }
             }
         }
 
@@ -287,13 +324,19 @@ class HhKungfuSource(
 
     /**
      * Resolve the embed player URL for one episode locator ("postId|tap-n|sv").
-     * [prefer4k] picks the vip4k stream type when available.
+     *
+     * V2 (A7) replaces the old prefer4k flag — a boolean the metadata
+     * almost never turned on — with the explicit stream [variant]
+     * (player.php `type`: tiktik/pro/vip4k/vip4kv2) of the server group
+     * the user actually picked. Unknown/blank variants fall back to the
+     * "pro" stream the app has always used.
      */
-    suspend fun resolveEmbed(locator: String, prefer4k: Boolean = false): String {
+    suspend fun resolveEmbed(locator: String, variant: String = DEFAULT_VARIANT): String {
         val parts = locator.split("|")
         require(parts.size == 3) { "Bad donghua locator" }
         val (postId, chapterSt, sv) = parts
-        val type = if (prefer4k) "vip4k" else "pro"
+        val type = variant.takeIf { v -> STREAM_VARIANTS.any { it.first == v } }
+            ?: DEFAULT_VARIANT
         val url = "$base/player/player.php?action=dox_ajax_player&post_id=$postId&chapter_st=$chapterSt&sv=$sv&type=$type"
         val html = withContext(Dispatchers.IO) {
             val req = Request.Builder().url(url).get()

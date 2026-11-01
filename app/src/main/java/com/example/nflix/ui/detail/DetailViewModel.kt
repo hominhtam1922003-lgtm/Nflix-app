@@ -49,7 +49,12 @@ data class DetailUiState(
     val serverStatuses: Map<Int, ServerStatus> = emptyMap(),
     val probingServers: Boolean = false,
     /** "Cùng thể loại" shelf at the end of the page. */
-    val related: List<TitleItem> = emptyList()
+    val related: List<TitleItem> = emptyList(),
+    /**
+     * V2 (0.2): server index the settings' version priority prefers —
+     * the server sheet marks it "Mặc định theo ưu tiên của bạn".
+     */
+    val preferredServerIndex: Int = -1
 )
 
 class DetailViewModel(
@@ -63,6 +68,10 @@ class DetailViewModel(
     /** True once the user picks a server by hand — auto-fastest must not override that. */
     private var userPickedServer = false
     private var autoFastest = true
+
+    /** V2 (0.2): the user's "Ưu tiên bản dịch" value ("TM"/"VS"/"LT"). */
+    @Volatile
+    private var versionPriority: String = "TM"
 
     val isComic: Boolean = item.family == Family.TRUYEN || item.family == Family.MANHWA
 
@@ -102,11 +111,24 @@ class DetailViewModel(
                     rawDetail
                 }
                 app.database.titleDao().upsert(detail.item.toEntity())
-                // Default server: prefer Thuyết minh per the user's settings default.
-                val preferred = detail.servers.indexOfFirst { it.langKey == "tm" }
-                    .takeIf { it >= 0 } ?: 0
+                // V2 (0.2): default server = the group matching the
+                // user's "Ưu tiên bản dịch" setting. Before V2 this was
+                // hard-coded to thuyet-minh and the setting changed
+                // nothing (honesty debt, sheet frame 7). Read inline so
+                // the value is settled before the default is computed.
+                versionPriority = try {
+                    app.settings.flow.first().versionPriority
+                } catch (e: Exception) {
+                    versionPriority
+                }
+                val preferred = preferredServerIndex(detail)
                 _state.update {
-                    it.copy(loading = false, detail = detail, serverIndex = preferred)
+                    it.copy(
+                        loading = false,
+                        detail = detail,
+                        serverIndex = preferred,
+                        preferredServerIndex = preferred
+                    )
                 }
                 // 0.1/0.2: when the "Tự chọn server sống nhanh nhất" setting
                 // is on, really measure every server now (in the background)
@@ -151,6 +173,27 @@ class DetailViewModel(
     }
 
     fun server(): ServerGroup? = _state.value.detail?.servers?.getOrNull(_state.value.serverIndex)
+
+    /**
+     * V2 (0.2): langKey preference order for the settings' version
+     * priority. The first group in this order present in a detail is
+     * the default server; the sheet marks it "Mặc định theo ưu tiên
+     * của bạn" (sheet frame 7).
+     */
+    private fun priorityOrder(): List<String> = versionPriorityOrder(versionPriority)
+
+    /** Index of the server group the settings' priority prefers (-1 when no servers). */
+    fun preferredServerIndex(detail: TitleDetail): Int {
+        if (detail.servers.isEmpty()) return -1
+        for (key in priorityOrder()) {
+            val idx = detail.servers.indexOfFirst { it.langKey == key }
+            if (idx >= 0) return idx
+        }
+        return 0
+    }
+
+    /** The version priority in effect (sheet frame 7 reads it via state). */
+    fun currentVersionPriority(): String = versionPriority
 
     /**
      * A4: a KKPhim "sắp chiếu" title — detail loaded fine but there is no
@@ -214,8 +257,13 @@ class DetailViewModel(
             }
         } else if (item.sourceId == "hhkungfu" || item.family == Family.DONGHUA) {
             // Donghua plays through an embed iframe — same rule as cobe's.
+            // V2 (A7): resolve with the variant of the group owning this
+            // episode instance (embeds are reported unmeasurable anyway).
             try {
-                ProbeTarget.Embed(app.hhKungfu.resolveEmbed(ep.slug))
+                val variant = _state.value.detail?.servers
+                    ?.firstOrNull { g -> g.episodes.any { it.slug == ep.slug } }
+                    ?.variantKey.orEmpty()
+                ProbeTarget.Embed(app.hhKungfu.resolveEmbed(ep.slug, variant))
             } catch (e: Exception) {
                 ProbeTarget.None
             }
@@ -319,19 +367,28 @@ class DetailViewModel(
         }
     }
 
-    /** Range chunks of 100 over the ascending list: "1–100", "101–200", ... */
+    /**
+     * Range chunks of 100 over the DISPLAY order. V2 (0.6) fix: "Mới
+     * nhất" mode used to chunk the ASCENDING list and then reverse each
+     * chunk on display, which inverted the order INSIDE every 100-range
+     * (episodes ran 101→200 upward within a "newest" view). Now the
+     * whole list is put in display order FIRST and chunked after, so a
+     * descending view is globally descending — range labels follow the
+     * display order too ("101–128" in the newest-first range, not
+     * "128–101" reversed locally).
+     */
     fun ranges(): List<Pair<String, List<GridUnit>>> {
-        val all = allUnits()
-        if (all.size <= 100) return listOf(("" to all))
-        return all.chunked(100).map { chunk ->
+        val ascending = allUnits()
+        val display = if (_state.value.sortDesc) ascending.reversed() else ascending
+        if (display.size <= 100) return listOf(("" to display))
+        return display.chunked(100).map { chunk ->
             "${fmtNum(chunk.first().number)}–${fmtNum(chunk.last().number)}" to chunk
         }
     }
 
-    /** Units in the selected range, in the current sort order. */
+    /** Units in the selected range, already in the current sort order. */
     fun visibleUnits(): List<GridUnit> {
-        val chunk = ranges().getOrNull(_state.value.rangeIndex)?.second ?: return emptyList()
-        return if (_state.value.sortDesc) chunk.reversed() else chunk
+        return ranges().getOrNull(_state.value.rangeIndex)?.second ?: emptyList()
     }
 
     /** Only units the user actually opened in the player/reader count as watched. */
@@ -459,4 +516,15 @@ class DetailViewModel(
             }
         }
     }
+}
+
+/**
+ * V2 (0.2): the langKey preference order for a "Ưu tiên bản dịch"
+ * setting value — the ONE rule Detail's default server and
+ * MainActivity's quick-play both follow (no second copy to drift).
+ */
+fun versionPriorityOrder(priority: String): List<String> = when (priority) {
+    "VS" -> listOf("vs", "tm", "lt")
+    "LT" -> listOf("lt", "tm", "vs")
+    else -> listOf("tm", "vs", "lt")
 }

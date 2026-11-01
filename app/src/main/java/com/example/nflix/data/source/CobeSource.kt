@@ -23,6 +23,20 @@ sealed class CobePlay {
     data class Embed(val url: String) : CobePlay()
 }
 
+/** V2 (A3): one editorial collection from Cobe's homepageLists. */
+data class CobeCollection(
+    val name: String,
+    val filter: String,
+    val items: List<TitleItem>
+)
+
+/** V2 (A5): one Cobe actor page (/dien-vien/<slug>) distilled. */
+data class CobeActorPage(
+    val name: String,
+    val thumb: String,
+    val items: List<TitleItem>
+)
+
 /**
  * CobePhim (cobephim.fun) — second source for the Phim/Anime families
  * (đợt 4, user-approved merge 2026-11-01). Measured live 2026-11-01, see
@@ -277,6 +291,9 @@ class CobeSource(
             thumbUrl = thumb.ifBlank { poster },
             quality = m.optString("quality"),
             versionBadge = badgeOf(m.optString("language")),
+            // V2 (A1): the raw language string feeds the local
+            // PHIÊN BẢN sheet filter.
+            languages = m.optString("language"),
             // Movies read "Full" like KKPhim's phim-le; series count from
             // episode_current, which the episode list later corrects.
             latestLabel = when {
@@ -291,6 +308,25 @@ class CobeSource(
             completed = deriveCompleted(m),
             updatedEpochSec = parseUpdatedAt(m)
         )
+    }
+
+    /**
+     * V2 (A5): actor objects of a by-slug record ({id, name, slug,
+     * thumbnail} — thumbnail is a TMDB image). Only actors WITH a slug
+     * can open an actor page; the rest stay plain names in [peopleNames].
+     */
+    private fun actorRefsOf(arr: JSONArray?): List<com.example.nflix.data.model.ActorRef> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val name = o.optString("name").trim()
+            if (name.isBlank()) return@mapNotNull null
+            com.example.nflix.data.model.ActorRef(
+                name = name,
+                slug = o.optString("slug").trim(),
+                thumb = o.optString("thumbnail").trim()
+            )
+        }
     }
 
     /** People arrays hold objects with a name field (plain strings tolerated). */
@@ -334,6 +370,106 @@ class CobeSource(
         return (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { parseItem(it, Family.PHIM) }
         }
+    }
+
+    /**
+     * V2 (A2): the view charts KKPhim does not have. Cobe's search
+     * accepts sort=view_day / sort=view_week and returns a really
+     * decreasing order (measured 2026-11-01: day 1577→191 over 10).
+     * view_month is inconsistent in samples — never used. Each item's
+     * viewCount is the counter OF THE SORTED FIELD, read from the same
+     * record (a week chart shows week numbers, not day numbers).
+     * [animeOnly] adds the hoat-hinh category id the measurement used
+     * (genres=24); the Anime country gate still applies on top.
+     */
+    suspend fun searchByViews(
+        weekly: Boolean,
+        limit: Int = 24,
+        family: Family = Family.PHIM,
+        animeOnly: Boolean = false
+    ): List<TitleItem> {
+        val sort = if (weekly) "view_week" else "view_day"
+        val genreParam = if (animeOnly) "&genres=24" else ""
+        val root = getApiJson("/movies/search?sort=$sort&limit=$limit$genreParam")
+        val arr = root.optJSONArray("result") ?: JSONArray()
+        return (0 until arr.length()).mapNotNull { i ->
+            val m = arr.optJSONObject(i) ?: return@mapNotNull null
+            parseItem(m, family).copy(viewCount = m.optLong(sort))
+        }
+    }
+
+    /**
+     * V2 (A3): Cobe's editorial homepage collections (measured
+     * 2026-11-01: GET /lists/homepageLists → result.collections, 15
+     * lists with 10–30 movies embedded). Callers pick the lists that do
+     * not duplicate shelves the app already has and rename them in the
+     * app's voice — the list CONTENT stays the source's.
+     */
+    suspend fun homepageLists(): List<CobeCollection> {
+        val root = getApiJson("/lists/homepageLists?page=1&limit=15")
+        val cols = root.optJSONObject("result")?.optJSONArray("collections")
+            ?: root.optJSONArray("collections")
+            ?: JSONArray()
+        return (0 until cols.length()).mapNotNull { i ->
+            val c = cols.optJSONObject(i) ?: return@mapNotNull null
+            val name = c.optString("name").trim()
+            if (name.isBlank()) return@mapNotNull null
+            val moviesArr = c.optJSONArray("movies")
+                ?: c.optJSONArray("items")
+                ?: c.optJSONArray("result")
+                ?: c.optJSONArray("data")
+                ?: JSONArray()
+            val items = (0 until moviesArr.length()).mapNotNull { j ->
+                moviesArr.optJSONObject(j)?.let { parseItem(it, Family.PHIM) }
+            }.distinctBy { it.slug }
+            CobeCollection(
+                name = name,
+                filter = c.optString("filter"),
+                items = items
+            )
+        }
+    }
+
+    /**
+     * V2 (A5): an actor's filmography from the Cobe WEB actor page
+     * (/dien-vien/<slug>, measured live: HTTP 200, the RSC payload
+     * embeds the actor's titles as regular "item" records — the same
+     * extraction the listing pages use). The pure API person endpoints
+     * are dead (404/401), so the web page is the only path. A slug the
+     * site does not know 404s out of getText — the caller shows an
+     * honest empty/error state, never a dead link.
+     */
+    suspend fun actorPage(slug: String): CobeActorPage {
+        val html = getText("$webBase/dien-vien/$slug")
+        val items = extractItemJson(html)
+            .filter { it.optString("slug").isNotBlank() }
+            .map { parseItem(it, Family.PHIM) }
+            .distinctBy { it.slug }
+        // The person object rides the same payload ({name, slug,
+        // thumbnail} in some order); recover name/thumb when present,
+        // else humanize the slug — the filmography is the point.
+        val decoded = decodeRscLayer(html)
+        val name = findPersonField(decoded, slug, "name")
+            ?: slug.split("-").filter { it.isNotBlank() }
+                .joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+        val thumb = findPersonField(decoded, slug, "thumbnail") ?: ""
+        return CobeActorPage(name = name, thumb = thumb, items = items)
+    }
+
+    /** One string field of the person object that carries [slug], either field order. */
+    private fun findPersonField(decoded: String, slug: String, field: String): String? {
+        val esc = Regex.escape(slug)
+        val patterns = listOf(
+            Regex("\"$field\":\"((?:[^\"\\\\]|\\\\.)*)\"[^}]{0,200}?\"slug\":\"$esc\""),
+            Regex("\"slug\":\"$esc\"[^}]{0,200}?\"$field\":\"((?:[^\"\\\\]|\\\\.)*)\"")
+        )
+        for (p in patterns) {
+            val v = p.find(decoded)?.groupValues?.get(1)?.trim()
+            if (!v.isNullOrBlank()) {
+                return v.replace("\\/", "/").replace("\\\"", "\"")
+            }
+        }
+        return null
     }
 
     /**
@@ -570,6 +706,7 @@ class CobeSource(
             totalCount = total,
             durationLabel = m.optString("episode_time"),
             actors = peopleNames(m.optJSONArray("actors")),
+            actorRefs = actorRefsOf(m.optJSONArray("actors")),
             directors = peopleNames(m.optJSONArray("directors")),
             servers = groups,
             trailerUrl = m.optString("trailer_url"),

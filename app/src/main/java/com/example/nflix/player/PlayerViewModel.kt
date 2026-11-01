@@ -129,11 +129,15 @@ class PlayerViewModel(
                                                 ?: ProbeTarget.None
                                         }
                                     item.sourceId == "hhkungfu" -> try {
+                                        // V2 (A7): resolve through the
+                                        // variant of the group this
+                                        // episode belongs to.
+                                        val variant = detail.servers
+                                            .firstOrNull { g ->
+                                                g.episodes.any { it.slug == ep.slug }
+                                            }?.variantKey.orEmpty()
                                         ProbeTarget.Embed(
-                                            app.hhKungfu.resolveEmbed(
-                                                ep.slug,
-                                                prefer4k = item.quality.contains("4K")
-                                            )
+                                            app.hhKungfu.resolveEmbed(ep.slug, variant)
                                         )
                                     } catch (e: Exception) {
                                         ProbeTarget.None
@@ -210,7 +214,10 @@ class PlayerViewModel(
             }
             item.sourceId == "hhkungfu" -> {
                 try {
-                    val embed = app.hhKungfu.resolveEmbed(episode.slug, prefer4k = item.quality.contains("4K"))
+                    // V2 (A7): the variant of the group the user is on —
+                    // state.serverIndex is set before applyEpisode runs.
+                    val variant = server()?.variantKey.orEmpty()
+                    val embed = app.hhKungfu.resolveEmbed(episode.slug, variant)
                     _state.update {
                         it.copy(loading = false, episode = episode, kind = PlaybackKind.EMBED, embedUrl = embed)
                     }
@@ -270,6 +277,34 @@ class PlayerViewModel(
     fun nextEpisode(): EpisodeItem? {
         val cur = _state.value.episode ?: return null
         return episodes().filter { it.number > cur.number }.minByOrNull { it.number }
+    }
+
+    /**
+     * V2 (A6): warm the shared video cache with the head of the NEXT
+     * episode (direct HLS only) once playback passes the halfway point.
+     * The PlayerScreen's progress loop calls this repeatedly; the
+     * attempted-set makes each episode warm at most once per session.
+     * Embed episodes (incl. all Donghua) are skipped — a WebView stream
+     * cannot be prefetched, and the UI promises nothing about it.
+     */
+    private val prefetchAttempted = mutableSetOf<String>()
+    fun prefetchNext() {
+        val s = _state.value
+        if (s.kind != PlaybackKind.STREAM) return
+        val next = nextEpisode() ?: return
+        if (!prefetchAttempted.add(next.slug)) return
+        viewModelScope.launch {
+            val url = when {
+                CobeSource.isLocator(next.slug) -> try {
+                    (app.cobe.resolvePlay(next.slug) as? CobePlay.Hls)?.url
+                } catch (e: Exception) {
+                    null
+                }
+                next.streamUrl.isNotBlank() -> next.streamUrl
+                else -> null
+            } ?: return@launch
+            com.example.nflix.data.PlayerPrefetch.prefetchHls(app.videoCache, url)
+        }
     }
 
     /** Only episodes actually opened in the player count as watched. */

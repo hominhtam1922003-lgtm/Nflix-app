@@ -300,6 +300,26 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                 value = labelOf(CHECK_OPTIONS, settings.checkInterval)
             ) { optionSheet = "check" }
         }
+        item {
+            // V2 (0.6, sheet frame 5c): the worker's REAL last-run stamp
+            // and the REAL tracked count — both were recorded all along
+            // (workerStamps / DAO tracked()) but never shown anywhere.
+            val stamps by app.settings.workerStamps.collectAsState(initial = emptyMap())
+            val trackedCount by androidx.compose.runtime.remember {
+                app.database.userStateDao().trackedCount()
+            }.collectAsState(initial = 0)
+            val lastMs = stamps.values.maxOrNull()
+            val lastText = if (lastMs != null && lastMs > 0) {
+                java.text.SimpleDateFormat("HH:mm dd/MM", java.util.Locale.US)
+                    .format(java.util.Date(lastMs))
+            } else {
+                "Chưa có lần nào"
+            }
+            InfoRow(
+                label = "Lần kiểm tra cuối: $lastText",
+                sub = "Đang theo dõi $trackedCount tựa"
+            )
+        }
 
         item { GroupHeader("TRANG CHỦ & NGUỒN") }
         item {
@@ -319,9 +339,13 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
             ) { on -> scope.launch { app.settings.set(SettingsStore.AUTO_FALLBACK, on) } }
         }
         item {
+            // V2 (0.1): the toggle is REALLY wired now (WebView embed
+            // interception, AdBlock.kt) and the copy says exactly what
+            // it does — the old "Đã chặn 100%" claim had no code behind
+            // it and is gone.
             ToggleRow(
-                label = "Chặn quảng cáo trong app",
-                sub = "Đã chặn 100% — kể cả quảng cáo cờ bạc",
+                label = "Chặn quảng cáo trong trang phát nhúng",
+                sub = "Chặn các tên miền quảng cáo/cờ bạc đã biết khi phát qua trang nhúng. Không cam kết chặn 100%.",
                 checked = settings.adBlock
             ) { on -> scope.launch { app.settings.set(SettingsStore.AD_BLOCK, on) } }
         }
@@ -509,6 +533,23 @@ private fun ValueRow(label: String, sub: String, value: String, onClick: () -> U
             tint = NflixTextMuted,
             modifier = Modifier.size(16.dp).padding(start = 4.dp)
         )
+    }
+}
+
+/** V2 (0.6): a plain display-only row (label + sub, no action). */
+@Composable
+private fun InfoRow(label: String, sub: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, color = Color.White, fontSize = 14.sp)
+            if (sub.isNotBlank()) {
+                Text(sub, color = NflixTextMuted, fontSize = 12.sp)
+            }
+        }
     }
 }
 

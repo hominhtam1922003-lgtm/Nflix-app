@@ -187,6 +187,12 @@ class KkPhimSource(
             thumbUrl = thumb.ifBlank { poster },
             quality = item.optString("quality"),
             versionBadge = versionBadge(item),
+            // V2 (A1): keep the raw lang_key set ("tm,vs,...") — the
+            // PHIÊN BẢN sheet filter reads it locally.
+            languages = (item.optJSONArray("lang_key")?.let { arr ->
+                (0 until arr.length()).map { arr.optString(it) }
+                    .filter { it.isNotBlank() }
+            } ?: emptyList()).joinToString(","),
             latestLabel = epCurrent,
             episodeCount = epNum,
             year = item.optInt("year"),
@@ -219,8 +225,10 @@ class KkPhimSource(
 
     /**
      * Filtered listing for the Phim tab's "Thể loại" sheet. Empty category /
-     * country and year 0 mean "all". "chieu-rap" is a flag on phim-le, so it
-     * maps to the phim-le list (the flag itself is applied by cinema()).
+     * country and year 0 mean "all". The pure "chieu-rap" kind (no other
+     * filter) is served by cinema()'s dedicated list; combined with other
+     * filters it falls back to the phim-le list like before (whether the
+     * chieu-rap list accepts the same filter params is unmeasured).
      */
     suspend fun listFiltered(
         kind: String,
@@ -247,14 +255,18 @@ class KkPhimSource(
     suspend fun anime(page: Int = 1): List<TitleItem> =
         listFiltered(kind = "hoat-hinh", country = "nhat-ban", page = page)
 
+    /**
+     * "Phim chiếu rạp" — the source DOES have a dedicated list
+     * (V2/A4, measured live 2026-11-01: /v1/api/danh-sach/phim-chieu-rap,
+     * 907 titles / 38 pages, every sampled record chieurap=true). The
+     * old note here claimed no such endpoint existed and filtered the
+     * phim-le list by the chieurap flag instead — sparse (~5% density)
+     * and slow. The dedicated list uses the same parser/pagination as
+     * every other danh-sach list.
+     */
     suspend fun cinema(page: Int = 1, limit: Int = 24): List<TitleItem> {
-        // Chiếu rạp has no dedicated endpoint: filter phim-le by the chieurap flag.
-        val root = getJson("$BASE/v1/api/danh-sach/phim-le?page=$page&limit=48")
-        val data = root.optJSONObject("data")
-        val items = data?.optJSONArray("items") ?: JSONArray()
-        return (0 until items.length()).mapNotNull { i ->
-            items.optJSONObject(i)?.takeIf { it.optBoolean("chieurap") }?.let { parseItem(it) }
-        }.take(limit)
+        val root = getJson("$BASE/v1/api/danh-sach/phim-chieu-rap?page=$page&limit=$limit")
+        return parseList(root)
     }
 
     /**

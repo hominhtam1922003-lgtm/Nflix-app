@@ -61,6 +61,7 @@ import com.example.nflix.data.model.TitleItem
 import com.example.nflix.ui.components.FamilyTag
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.components.PosterCard
+import com.example.nflix.ui.theme.NflixAmber
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixOrange
 import com.example.nflix.ui.theme.NflixSurface
@@ -116,6 +117,10 @@ fun SearchScreen(
     var results by remember { mutableStateOf<List<TitleItem>?>(null) }
     var resultsQuery by remember { mutableStateOf("") }
     var resultsFilter by remember { mutableIntStateOf(0) }
+    // V2 (0.4): the submit path shows a real "đang tìm" state and keeps
+    // the failed-source count of the round that produced these results.
+    var searchingResults by remember { mutableStateOf(false) }
+    var resultsFailed by remember { mutableStateOf(0) }
 
     fun submit(query: String) {
         val q = query.trim()
@@ -123,10 +128,28 @@ fun SearchScreen(
         viewModel.recordHistory(q)
         keyboard?.hide()
         scope.launch {
-            results = viewModel.searchNow(q)
+            searchingResults = true
+            val outcome = viewModel.searchNow(q)
+            results = outcome.results
+            resultsFailed = outcome.failedSources
             resultsQuery = q
             resultsFilter = 0
+            searchingResults = false
         }
+    }
+
+    // V2 (0.4): while a submitted search runs, the screen says so.
+    if (searchingResults && results == null) {
+        Column(
+            modifier = modifier.fillMaxSize().background(NflixBackground),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(Modifier.height(120.dp))
+            CircularProgressIndicator(color = NflixViolet)
+            Spacer(Modifier.height(14.dp))
+            Text("Đang tìm…", color = NflixTextMuted, fontSize = 14.sp)
+        }
+        return
     }
 
     // Results page (poster grid + family filter chips)
@@ -169,9 +192,47 @@ fun SearchScreen(
                 onSelect = { resultsFilter = it }
             )
             Spacer(Modifier.height(10.dp))
+            // V2 (0.4): partial coverage is stated, not hidden.
+            if (resultList.isNotEmpty() && resultsFailed in 1..4) {
+                Text(
+                    "Một số nguồn không kết nối được ($resultsFailed/5) — kết quả có thể chưa đủ.",
+                    color = NflixAmber,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
             if (shown.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Không tìm thấy kết quả", color = NflixTextMuted, fontSize = 14.sp)
+                if (resultList.isEmpty() && resultsFailed >= 5) {
+                    // V2 (0.4): every source failed — that is a
+                    // connection error, NOT "no title matches".
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Spacer(Modifier.height(60.dp))
+                        Text(
+                            "Không kết nối được các nguồn",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Kiểm tra kết nối mạng rồi thử lại.",
+                            color = NflixTextMuted,
+                            fontSize = 13.sp
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        androidx.compose.material3.Button(
+                            onClick = { submit(resultsQuery) },
+                            colors = androidx.compose.material3.ButtonDefaults
+                                .buttonColors(containerColor = NflixViolet)
+                        ) { Text("Thử lại", color = Color.White) }
+                    }
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Không tìm thấy kết quả", color = NflixTextMuted, fontSize = 14.sp)
+                    }
                 }
             } else {
                 LazyVerticalGrid(
@@ -311,44 +372,55 @@ fun SearchScreen(
                     }
                 }
             }
-            item {
-                Text(
-                    "Đang được tìm nhiều",
-                    color = Color.White,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-                )
-                FlowRow(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SearchViewModel.TRENDING.forEach { (keyword, hot) ->
-                        Row(
-                            modifier = Modifier
-                                .background(NflixSurface, RoundedCornerShape(50))
-                                .clickable {
-                                    viewModel.setQuery(keyword)
-                                    submit(keyword)
-                                }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (hot) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_flame),
-                                    contentDescription = null,
-                                    tint = NflixOrange,
-                                    modifier = Modifier.size(14.dp)
+            // V2 (0.5, sheet frame 8): "Đang được tìm nhiều" = the REAL
+            // Cobe view-day chart — ranked title rows that open the
+            // title itself. The old block was 5 hand-written keywords
+            // with hand-set 🔥 (leftover K14) — gone.
+            if (state.trending.isNotEmpty()) {
+                item {
+                    Column {
+                        Text(
+                            "Đang được tìm nhiều",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                        )
+                        state.trending.forEachIndexed { index, title ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth()
+                                    .clickable { onOpenTitle(title) }
+                                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${index + 1}",
+                                    color = NflixViolet,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.width(28.dp)
                                 )
-                                Spacer(Modifier.width(5.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        title.name,
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        maxLines = 1
+                                    )
+                                    if (title.viewCount > 0) {
+                                        Text(
+                                            "${formatViewCount(title.viewCount)} lượt xem hôm nay",
+                                            color = NflixTextMuted,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                                FamilyTag(title.family.label)
                             }
-                            Text(keyword, color = Color.White, fontSize = 13.sp)
                         }
+                        Spacer(Modifier.height(24.dp))
                     }
                 }
-                Spacer(Modifier.height(24.dp))
             }
         } else {
             if (state.searching && state.suggestions.isEmpty()) {
@@ -361,7 +433,15 @@ fun SearchScreen(
             if (!state.searching && state.suggestions.isEmpty()) {
                 item {
                     Box(Modifier.fillMaxWidth().padding(36.dp), contentAlignment = Alignment.Center) {
-                        Text("Chưa có gợi ý cho từ khoá này", color = NflixTextMuted, fontSize = 13.sp)
+                        // V2 (0.4): all sources down ≠ "no suggestions".
+                        Text(
+                            if (state.failedSources >= 5) {
+                                "Không kết nối được các nguồn — kiểm tra mạng rồi thử lại."
+                            } else {
+                                "Chưa có gợi ý cho từ khoá này"
+                            },
+                            color = NflixTextMuted, fontSize = 13.sp
+                        )
                     }
                 }
             }
@@ -394,5 +474,22 @@ fun SearchScreen(
             }
             item { Spacer(Modifier.height(20.dp)) }
         }
+    }
+}
+
+/** V2: compact view counter ("1.577" under 10k, "128,4K" above). */
+fun formatViewCount(v: Long): String = when {
+    v < 10_000 -> "%,d".format(v).replace(',', '.')
+    v < 1_000_000 -> {
+        val k = v / 100.0
+        val whole = (k / 10).toLong()
+        val frac = (k % 10).toLong()
+        if (frac == 0L) "${whole}K" else "$whole,${frac}K"
+    }
+    else -> {
+        val m = v / 100_000.0
+        val whole = (m / 10).toLong()
+        val frac = (m % 10).toLong()
+        if (frac == 0L) "${whole}M" else "$whole,${frac}M"
     }
 }

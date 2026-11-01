@@ -40,6 +40,23 @@ class NflixApp : Application(), ImageLoaderFactory {
     val kkPhim: KkPhimSource by lazy { KkPhimSource() }
     val cobe: CobeSource by lazy { CobeSource(settings = settings) }
 
+    /**
+     * V2 (A6): the video cache shared by the player (write-through
+     * streaming) and the next-episode prefetcher. Sized generously per
+     * the user's rule — the app may be heavy as long as playback is
+     * best-quality and fast (the 30 GB data budget is the ceiling, LRU
+     * eviction keeps this cache at 2 GB).
+     */
+    val videoCache: androidx.media3.datasource.cache.SimpleCache by lazy {
+        androidx.media3.datasource.cache.SimpleCache(
+            java.io.File(cacheDir, "nflix_video_cache"),
+            androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor(
+                2L * 1024 * 1024 * 1024
+            ),
+            androidx.media3.database.StandaloneDatabaseProvider(this)
+        )
+    }
+
     /** Đợt 4: merged Phim/Anime front (KKPhim identity + Cobe server groups). */
     val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(kkPhim, cobe) }
 

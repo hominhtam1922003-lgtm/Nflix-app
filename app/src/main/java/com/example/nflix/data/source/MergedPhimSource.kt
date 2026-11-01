@@ -79,6 +79,7 @@ class MergedPhimSource(
             totalCount = total,
             durationLabel = cb.durationLabel.ifBlank { kk.durationLabel },
             actors = cb.actors.ifEmpty { kk.actors },
+            actorRefs = cb.actorRefs,
             directors = cb.directors.ifEmpty { kk.directors },
             servers = servers,
             trailerUrl = cb.trailerUrl.ifBlank { kk.trailerUrl },
@@ -254,6 +255,9 @@ class MergedPhimSource(
             totalCount = total,
             durationLabel = kk.durationLabel.ifBlank { cb.durationLabel },
             actors = kk.actors.ifEmpty { cb.actors },
+            // V2 (A5): the Cobe record is the one carrying actor page
+            // slugs/thumbs — keep its refs whichever side owns the names.
+            actorRefs = cb.actorRefs,
             directors = kk.directors.ifEmpty { cb.directors },
             servers = servers,
             trailerUrl = kk.trailerUrl.ifBlank { cb.trailerUrl },
