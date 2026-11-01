@@ -336,6 +336,22 @@ class CobeSource(
         }
     }
 
+    /**
+     * Full (label to slug) categories of ONE title, from its by-slug
+     * record. This is the only Cobe surface whose categories are
+     * complete: the web LISTING payloads embed only the listing page's
+     * own category per record (the /the-loai/hoat-hinh pool carries
+     * just the "hoat-hinh" umbrella), which is what emptied the Anime
+     * genre sheet in 1.2.0. The umbrella is included in the result —
+     * callers filter it out.
+     */
+    suspend fun categoriesOf(slug: String): List<Pair<String, String>> {
+        val root = getApiJson("/movies/by-slug/$slug")
+        val m = root.optJSONObject("movie") ?: return emptyList()
+        val item = parseItem(m, Family.ANIME)
+        return item.genres.zip(item.genreSlugs)
+    }
+
     // ------------------------------------------------------------------
     // Web listings (1.2.0) — the API's list endpoints are token-locked
     // (401), but the Next.js pages embed the SAME full movie records in

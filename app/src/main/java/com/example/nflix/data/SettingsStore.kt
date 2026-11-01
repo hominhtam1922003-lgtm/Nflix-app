@@ -171,6 +171,19 @@ class SettingsStore(context: Context) {
         store.edit { it[DONGHUA_SLUGS] = slugs.joinToString(",") }
     }
 
+    /**
+     * 1.2.0 fix: persistent per-slug cache of FULL Cobe categories for
+     * Anime-pool titles, enriched once from the by-slug API (the web
+     * listing payload only embeds the "hoat-hinh" umbrella). One JSON
+     * blob: { slug: [[label, slug], ...] } — each title is fetched at
+     * most once, ever; the blob is rewritten only when new entries land.
+     */
+    val animeGenreCacheJson: Flow<String> = store.data.map { p -> p[ANIME_GENRE_CACHE] ?: "" }
+
+    suspend fun setAnimeGenreCache(json: String) {
+        store.edit { it[ANIME_GENRE_CACHE] = json }
+    }
+
     companion object {
         val QUALITY = stringPreferencesKey("quality_default")
         val VERSION_PRIORITY = stringPreferencesKey("version_priority")
@@ -197,5 +210,6 @@ class SettingsStore(context: Context) {
         val MANHWA_INDEX = stringPreferencesKey("manhwa_index_json")
         val MANHWA_INDEX_AT = stringPreferencesKey("manhwa_index_built_at")
         val DONGHUA_SLUGS = stringPreferencesKey("donghua_slug_pool")
+        val ANIME_GENRE_CACHE = stringPreferencesKey("anime_genre_cache_json")
     }
 }

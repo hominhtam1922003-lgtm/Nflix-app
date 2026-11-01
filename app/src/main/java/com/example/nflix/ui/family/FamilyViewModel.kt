@@ -128,6 +128,7 @@ class FamilyViewModel(
     private var animePoolNextPage = 1
     private var animePoolTotalPages = Int.MAX_VALUE
     private var animePoolStarted = false
+    private var animeEnrichRunning = false
 
     // --- Manhwa local index (Khối C) ---
     private var manhwaIndex: List<ManhwaIndexEntry>? = null
@@ -490,6 +491,7 @@ class FamilyViewModel(
             viewModelScope.launch {
                 loadAnimePoolPages(2)
                 publishAnime()
+                kickAnimeEnrichment()
                 _state.update { it.copy(loadingMore = false) }
             }
             return
@@ -601,6 +603,7 @@ class FamilyViewModel(
     private fun startAnimePool() {
         if (animePoolStarted) {
             publishAnime()
+            kickAnimeEnrichment()
             return
         }
         animePoolStarted = true
@@ -612,6 +615,32 @@ class FamilyViewModel(
             loadAnimePoolPages(1)
             _state.update { it.copy(loading = false) }
             publishAnime()
+            kickAnimeEnrichment()
+        }
+    }
+
+    /**
+     * Background genre enrichment (1.2.0 fix): pool listing records
+     * carry only the "hoat-hinh" umbrella category, so chips/filter run
+     * on by-slug data fetched behind the list — never blocking it. Each
+     * completed pass re-publishes, so genre chips appear and a selected
+     * genre's results fill in live; the loop only continues while pool
+     * pages that landed mid-pass still owe attempts (each slug is
+     * attempted at most once per process run, so this terminates).
+     */
+    private fun kickAnimeEnrichment() {
+        if (animeEnrichRunning) return
+        animeEnrichRunning = true
+        viewModelScope.launch {
+            try {
+                while (true) {
+                    val changed = app.animeCatalog.enrichThinGenres(animePool.toList())
+                    if (changed) publishAnime()
+                    if (!app.animeCatalog.hasUnattemptedThin(animePool.toList())) break
+                }
+            } finally {
+                animeEnrichRunning = false
+            }
         }
     }
 
@@ -636,7 +665,10 @@ class FamilyViewModel(
         // Cross-page dedupe: the same show can surface under two slugs on
         // different pool pages (per-page dedupe happens in visible()).
         return app.animeCatalog.dedupeTitles(animePool).filter { item ->
-            (f.category.isEmpty() || item.genreSlugs.contains(f.category)) &&
+            // Category test runs on ENRICHED genres (AnimeCatalog cache):
+            // raw pool records carry only the "hoat-hinh" umbrella.
+            (f.category.isEmpty() ||
+                app.animeCatalog.genresOf(item).any { it.second == f.category }) &&
                 (f.year == 0 || item.year == f.year) &&
                 item.matchesStatus(f.status)
         }
@@ -647,9 +679,12 @@ class FamilyViewModel(
         val pool = app.animeCatalog.dedupeTitles(animePool)
         // Chips = categories REALLY present in the loaded pool (minus the
         // hoat-hinh umbrella itself), with real counts behind the order.
+        // Genres come from AnimeCatalog.genresOf: pool records enriched
+        // from the by-slug API count with their FULL categories, records
+        // not yet enriched contribute only what the listing really gave.
         val counts = mutableMapOf<String, Pair<String, Int>>()
         for (item in pool) {
-            for ((label, slug) in item.genres.zip(item.genreSlugs)) {
+            for ((label, slug) in app.animeCatalog.genresOf(item)) {
                 if (slug == "hoat-hinh") continue
                 val cur = counts[slug]
                 counts[slug] = label to ((cur?.second ?: 0) + 1)
@@ -683,12 +718,14 @@ class FamilyViewModel(
     fun applyAnimeFilter(filter: AnimeFilter) {
         _state.update { it.copy(animeFilter = filter) }
         publishAnime()
+        kickAnimeEnrichment()
         if (!filter.isDefault) {
             // A filter deserves a wider horizon than page 1: pull two
             // more pool pages in the background and re-publish.
             viewModelScope.launch {
                 loadAnimePoolPages(2)
                 publishAnime()
+                kickAnimeEnrichment()
             }
         }
     }
