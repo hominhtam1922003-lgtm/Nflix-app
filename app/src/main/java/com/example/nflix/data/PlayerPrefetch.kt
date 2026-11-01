@@ -1,7 +1,10 @@
 package com.example.nflix.data
 
 import android.net.Uri
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheDataSink
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.DataSpec
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +51,18 @@ object PlayerPrefetch {
         // CacheWriter stores the whole resource under the default cache
         // key (the URI string) — the same key CacheDataSource looks up
         // during playback, so warmed bytes are real playback hits.
-        CacheWriter(cache, DataSpec(Uri.parse(url)), null, null).cache()
+        val upstreamFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
+            .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(mapOf("Referer" to "https://phimapi.com/"))
+        val cacheDataSource = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setCacheWriteDataSinkFactory(
+                CacheDataSink.Factory().setCache(cache)
+            )
+            .createDataSourceForDownloading()
+        CacheWriter(cacheDataSource, DataSpec(Uri.parse(url)), null, null).cache()
     }
 
     /**

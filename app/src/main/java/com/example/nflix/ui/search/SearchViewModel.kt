@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
+import com.example.nflix.data.toEntity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -62,7 +63,7 @@ class SearchViewModel(private val app: NflixApp) : ViewModel() {
                 val chart = app.cobe.searchByViews(weekly = false, limit = 10)
                 if (chart.isNotEmpty()) {
                     app.database.titleDao().upsertAll(
-                        chart.map { com.example.nflix.data.toEntity(it) }
+                        chart.map { it.toEntity() }
                     )
                     _state.update { it.copy(trending = chart) }
                 }
