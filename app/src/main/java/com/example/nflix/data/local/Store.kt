@@ -74,6 +74,12 @@ interface TitleDao {
     @Query("SELECT * FROM titles WHERE id = :id")
     fun observe(id: String): Flow<TitleEntity?>
 
+    @Query("SELECT * FROM titles WHERE id = :id")
+    suspend fun get(id: String): TitleEntity?
+
+    @Query("SELECT * FROM titles WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<String>): List<TitleEntity>
+
     @Query("SELECT * FROM titles WHERE id IN (:ids)")
     fun observeByIds(ids: List<String>): Flow<List<TitleEntity>>
 }
@@ -88,6 +94,10 @@ interface UserStateDao {
 
     @Query("SELECT * FROM user_states WHERE titleId = :titleId")
     suspend fun get(titleId: String): UserStateEntity?
+
+    /** Every stored state row — backup export needs the whole book. */
+    @Query("SELECT * FROM user_states")
+    suspend fun allOnce(): List<UserStateEntity>
 
     @Query("SELECT * FROM user_states WHERE favorite = 1")
     fun favorites(): Flow<List<UserStateEntity>>

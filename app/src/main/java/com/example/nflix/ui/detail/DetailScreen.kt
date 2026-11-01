@@ -58,11 +58,14 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.nflix.NflixApp
 import com.example.nflix.R
+import com.example.nflix.data.ServerStatus
 import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.ui.components.FilterChips
+import com.example.nflix.ui.components.PosterShelf
+import com.example.nflix.ui.theme.NflixAmber
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixBlue
 import com.example.nflix.ui.theme.NflixGreen
@@ -80,6 +83,7 @@ fun DetailScreen(
     onBack: () -> Unit,
     onPlay: (TitleItem, EpisodeItem, ServerGroup) -> Unit,
     onRead: (TitleItem, ChapterItem) -> Unit,
+    onOpenTitle: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -95,6 +99,9 @@ fun DetailScreen(
     val allUnits = viewModel.allUnits()
     val ranges = viewModel.ranges()
     val visible = viewModel.visibleUnits()
+    // A4: "sắp chiếu" title — no playable episodes yet; the main button
+    // follows the title instead and the episode UI is replaced by a note.
+    val awaiting = viewModel.isAwaitingRelease()
 
     fun openUnit(unit: GridUnit) {
         if (viewModel.isComic) {
@@ -113,7 +120,8 @@ fun DetailScreen(
                         primary = dispItem.thumbUrl,
                         fallback = dispItem.posterUrl,
                         contentDescription = dispItem.name,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        title = dispItem.name
                     )
                     Box(
                         modifier = Modifier.fillMaxSize().background(
@@ -130,9 +138,18 @@ fun DetailScreen(
                         CircleButton(R.drawable.ic_back, "Quay lại") { onBack() }
                         Spacer(Modifier.weight(1f))
                         CircleButton(R.drawable.ic_share, "Chia sẻ") {
+                            // B4: name + last opened unit (or newest) + the
+                            // source's REAL public URL when one exists
+                            // (KKPhim has none — name only, never invented).
                             val send = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, dispItem.name)
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    com.example.nflix.data.ShareLinks.shareText(
+                                        dispItem,
+                                        state.userState?.lastUnitLabel.orEmpty()
+                                    )
+                                )
                             }
                             context.startActivity(Intent.createChooser(send, "Chia sẻ"))
                         }
@@ -175,14 +192,17 @@ fun DetailScreen(
 
                     Spacer(Modifier.height(16.dp))
                     Button(
-                        onClick = { viewModel.resumeUnit()?.let { openUnit(it) } },
-                        enabled = allUnits.isNotEmpty(),
+                        onClick = {
+                            if (awaiting) viewModel.toggleBell()
+                            else viewModel.resumeUnit()?.let { openUnit(it) }
+                        },
+                        enabled = allUnits.isNotEmpty() || awaiting,
                         colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().height(50.dp)
                     ) {
                         Icon(
-                            painter = painterResource(R.drawable.ic_play),
+                            painter = painterResource(if (awaiting) R.drawable.ic_bell else R.drawable.ic_play),
                             contentDescription = null,
                             tint = Color.White,
                             modifier = Modifier.size(18.dp)
@@ -194,6 +214,40 @@ fun DetailScreen(
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold
                         )
+                    }
+
+                    // A1: Trailer button — KKPhim ships a YouTube trailer_url
+                    // for nearly every title; shown only when the source
+                    // actually provides one.
+                    val trailerUrl = detail?.trailerUrl.orEmpty()
+                    if (trailerUrl.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                val intent = Intent(
+                                    Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(trailerUrl)
+                                )
+                                context.startActivity(intent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NflixSurface),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(44.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_play),
+                                contentDescription = null,
+                                tint = NflixRed,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Xem trailer",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -239,8 +293,9 @@ fun DetailScreen(
                             Text("Nguồn: ", color = NflixTextMuted, fontSize = 13.sp)
                             Text(sourceName, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
-                    } else {
+                    } else if (!awaiting) {
                         val server = viewModel.server()
+                        val selStatus = state.serverStatuses[state.serverIndex]
                         Row(
                             modifier = Modifier.fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
@@ -250,7 +305,7 @@ fun DetailScreen(
                         ) {
                             Box(
                                 modifier = Modifier.size(8.dp)
-                                    .background(NflixGreen, CircleShape)
+                                    .background(serverDotColor(selStatus), CircleShape)
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
@@ -259,7 +314,20 @@ fun DetailScreen(
                                     withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White)) {
                                         append(server?.name ?: "—")
                                     }
-                                    append(" · ${dispItem.quality.ifBlank { "FHD" }} · đang tốt · nhanh")
+                                    // 0.3: quality only when the source states
+                                    // it — never invent "FHD" for a blank field.
+                                    if (dispItem.quality.isNotBlank()) {
+                                        append(" · ${dispItem.quality}")
+                                    }
+                                    // 0.2: status comes from the last real
+                                    // measurement of THIS server (0.1 probe).
+                                    append(
+                                        " · " + when {
+                                            state.probingServers && selStatus == null -> "Đang kiểm tra…"
+                                            selStatus != null -> selStatus.describe()
+                                            else -> "Chưa kiểm tra"
+                                        }
+                                    )
                                 },
                                 color = NflixTextMuted,
                                 fontSize = 13.sp,
@@ -276,28 +344,37 @@ fun DetailScreen(
                     }
 
                     Spacer(Modifier.height(18.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (awaiting) {
                         Text(
-                            if (viewModel.isComic) "Danh sách chap" else "Danh sách tập",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            "Phim chưa phát hành — bấm Theo dõi để nhận thông báo khi có tập đầu tiên.",
+                            color = NflixTextMuted,
+                            fontSize = 13.sp
                         )
-                        if (allUnits.isNotEmpty()) {
+                    }
+                    if (!awaiting) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                " · ${allUnits.size} $unitWord",
-                                color = NflixTextMuted,
-                                fontSize = 13.sp
+                                if (viewModel.isComic) "Danh sách chap" else "Danh sách tập",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (allUnits.isNotEmpty()) {
+                                Text(
+                                    " · ${allUnits.size} $unitWord",
+                                    color = NflixTextMuted,
+                                    fontSize = 13.sp
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                if (state.sortDesc) "Mới nhất ▼" else "Cũ nhất ▼",
+                                color = NflixViolet,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable { viewModel.toggleSort() }
                             )
                         }
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            if (state.sortDesc) "Mới nhất ▼" else "Cũ nhất ▼",
-                            color = NflixViolet,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.clickable { viewModel.toggleSort() }
-                        )
                     }
                 }
             }
@@ -313,7 +390,9 @@ fun DetailScreen(
                 }
             }
 
-            item {
+            // A4: coming-soon titles have no units to jump to — skip the row.
+            if (!awaiting) {
+                item {
                 Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                     Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -369,6 +448,7 @@ fun DetailScreen(
                         )
                     }
                 }
+                }
             }
 
             item {
@@ -379,6 +459,14 @@ fun DetailScreen(
                     ) {
                         CircularProgressIndicator(color = NflixViolet)
                     }
+                } else if (awaiting) {
+                    // A4: empty grid replaced by a clean note — no error frame.
+                    Text(
+                        "Chưa có tập nào. Trailer và thông tin phim đã có ở trên.",
+                        color = NflixTextMuted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
+                    )
                 } else if (visible.isEmpty()) {
                     Text(
                         "Chưa lấy được danh sách — kiểm tra mạng rồi mở lại.",
@@ -442,6 +530,19 @@ fun DetailScreen(
                     }
                 }
             }
+
+            // A2: "Cùng thể loại" — same-genre shelf closing the page,
+            // loaded by the ViewModel from the title's first genre.
+            if (state.related.isNotEmpty()) {
+                item {
+                    PosterShelf(
+                        title = "Cùng thể loại",
+                        items = state.related,
+                        onItemClick = onOpenTitle,
+                        modifier = Modifier.padding(bottom = 28.dp)
+                    )
+                }
+            }
         }
 
         if (showServerSheet) {
@@ -459,6 +560,7 @@ fun DetailScreen(
                     )
                     Spacer(Modifier.height(10.dp))
                     servers.forEachIndexed { index, server ->
+                        val srvStatus = state.serverStatuses[index]
                         Row(
                             modifier = Modifier.fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
@@ -470,12 +572,16 @@ fun DetailScreen(
                                 .padding(horizontal = 12.dp, vertical = 13.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(modifier = Modifier.size(8.dp).background(NflixGreen, CircleShape))
+                            Box(
+                                modifier = Modifier.size(8.dp)
+                                    .background(serverDotColor(srvStatus), CircleShape)
+                            )
                             Spacer(Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(server.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                                 Text(
-                                    "${server.episodes.size} tập · đang tốt · nhanh",
+                                    "${server.episodes.size} tập · " +
+                                        (srvStatus?.describe() ?: "Chưa kiểm tra"),
                                     color = NflixTextMuted, fontSize = 12.sp
                                 )
                             }
@@ -489,11 +595,30 @@ fun DetailScreen(
                             }
                         }
                     }
+                    // Manual re-measure — the way to get real statuses when
+                    // the auto-fastest setting is off.
+                    Text(
+                        if (state.probingServers) "Đang đo tốc độ server…" else "Đo tốc độ server",
+                        color = if (state.probingServers) NflixTextMuted else NflixViolet,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .clickable(enabled = !state.probingServers) { viewModel.measureServers() }
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
+                    )
                     Spacer(Modifier.height(20.dp))
                 }
             }
         }
     }
+}
+
+/** Dot color for a server's last real status — grey until actually measured. */
+private fun serverDotColor(status: ServerStatus?): Color = when (status?.state) {
+    ServerStatus.State.OK -> NflixGreen
+    ServerStatus.State.SLOW -> NflixAmber
+    ServerStatus.State.ERROR -> NflixRed
+    else -> NflixTextMuted
 }
 
 @Composable

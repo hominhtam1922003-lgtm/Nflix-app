@@ -35,6 +35,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
+import com.example.nflix.data.toEntity
+import com.example.nflix.data.toItem
 import com.example.nflix.ui.components.FallbackImage
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.components.QualityBadge
@@ -45,15 +47,19 @@ import com.example.nflix.ui.theme.NflixGold
 import com.example.nflix.ui.theme.NflixText
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class TopUiState(
     val familyIndex: Int = 0,
-    val period: Int = 0, // 0 = Ngày, 1 = Tuần (chỉ Manhwa có BXH thật theo kỳ)
+    // Manhwa periods: 0 = Ngày (sort 13), 1 = Tuần (12), 2 = Tháng (11), 3 = Theo dõi (19)
+    val period: Int = 0,
     val loading: Boolean = true,
     val items: List<TitleItem> = emptyList(),
     val error: String = ""
@@ -61,9 +67,10 @@ data class TopUiState(
 
 /**
  * Tab "Top" (user chọn 2026-11-01 thay cho tab Tìm kiếm): bảng xếp hạng theo mục.
- * Manhwa có BXH thật từ NetTruyen (Top ngày sort=13 / Top tuần sort=12); các
- * nguồn còn lại không công bố lượt xem nên dùng danh sách thịnh hành của nguồn
- * và ghi nhãn "Đang thịnh hành" — không giả số liệu.
+ * BXH thật: Manhwa từ NetTruyen (ngày/tuần/tháng/follow), Truyện từ widget
+ * "TOP TRUYỆN ĐỌC NHIỀU" của TruyenQQ, Donghua từ trang /top-xem-nhieu (A6).
+ * KKPhim không công bố lượt xem (sortField bị bỏ qua — đã đo) nên Phim/Anime
+ * dùng danh sách thịnh hành và ghi nhãn "Đang thịnh hành" — không giả số liệu.
  */
 class TopViewModel(private val app: NflixApp) : ViewModel() {
     private val _state = MutableStateFlow(TopUiState())
@@ -100,11 +107,14 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
                     Family.PHIM -> app.kkPhim.latest(1)
                         .filter { it.family == Family.PHIM }.take(10)
                     Family.ANIME -> app.kkPhim.anime(1).take(10)
-                    Family.DONGHUA -> app.hhKungfu.trending().take(10)
-                    Family.MANHWA ->
-                        if (period == 0) app.netTruyen.hot(1).take(10)
-                        else app.netTruyen.topWeek(1).take(10)
-                    Family.TRUYEN -> app.truyenQq.hot().take(10)
+                    Family.DONGHUA -> app.hhKungfu.topViewed(1).take(10)
+                    Family.MANHWA -> when (period) {
+                        0 -> app.netTruyen.hot(1)
+                        1 -> app.netTruyen.topWeek(1)
+                        2 -> app.netTruyen.topMonth(1)
+                        else -> app.netTruyen.topFollow(1)
+                    }.take(10)
+                    Family.TRUYEN -> fillTruyenCovers(app.truyenQq.topRead()).take(10)
                 }
                 cache[familyIndex to period] = items
                 // Only apply if the user is still on this family/period.
@@ -125,6 +135,58 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
         val s = _state.value
         cache.remove(s.familyIndex to s.period)
         load(s.familyIndex, s.period)
+    }
+
+    /**
+     * A6: the TruyenQQ readership widget yields name + slug only. Covers
+     * are cross-filled by slug — first from the home()/latest() lists, then
+     * from titles already cached in the DB, and for whatever is still
+     * missing, from the title's own detail page (fetched in parallel).
+     * Results live in this ViewModel's cache like every other chart.
+     */
+    private suspend fun fillTruyenCovers(ranked: List<TitleItem>): List<TitleItem> {
+        if (ranked.isEmpty()) return ranked
+        val bySlug = HashMap<String, TitleItem>()
+        try {
+            val (hot, latest) = app.truyenQq.home()
+            (hot + latest).forEach { bySlug.putIfAbsent(it.slug, it) }
+        } catch (e: Exception) { /* other fill steps still apply */ }
+        try {
+            val known = app.database.titleDao().observeByIds(ranked.map { it.id }).first()
+            known.forEach { e -> bySlug.putIfAbsent(e.slug, e.toItem()) }
+        } catch (e: Exception) { /* other fill steps still apply */ }
+
+        fun merged(item: TitleItem, src: TitleItem?): TitleItem {
+            if (src == null || src.posterUrl.isBlank()) return item
+            return item.copy(
+                posterUrl = src.posterUrl,
+                thumbUrl = src.thumbUrl.ifBlank { src.posterUrl },
+                latestLabel = item.latestLabel.ifBlank { src.latestLabel },
+                episodeCount = if (item.episodeCount > 0) item.episodeCount else src.episodeCount
+            )
+        }
+
+        val filled = ranked.map { merged(it, bySlug[it.slug]) }
+        val missing = filled.filter { it.posterUrl.isBlank() }
+        if (missing.isEmpty()) return filled
+        val details = kotlinx.coroutines.coroutineScope {
+            missing.map { item ->
+                async {
+                    try {
+                        app.truyenQq.detail(item.slug).item
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll()
+        }
+        val detailBySlug = details.filterNotNull().associateBy { it.slug }
+        if (detailBySlug.isNotEmpty()) {
+            try {
+                app.database.titleDao().upsertAll(detailBySlug.values.map { it.toEntity() })
+            } catch (e: Exception) { /* cache write is best-effort */ }
+        }
+        return filled.map { merged(it, detailBySlug[it.slug]) }
     }
 }
 
@@ -154,13 +216,17 @@ fun TopScreen(onOpenTitle: (TitleItem) -> Unit) {
         Spacer(Modifier.height(8.dp))
         if (family == Family.MANHWA) {
             FilterChips(
-                labels = listOf("Top ngày", "Top tuần"),
+                labels = listOf("Top ngày", "Top tuần", "Top tháng", "Theo dõi"),
                 selectedIndex = state.period,
                 onSelect = { viewModel.selectPeriod(it) }
             )
         } else {
             Text(
-                "Đang thịnh hành",
+                when (family) {
+                    Family.TRUYEN -> "Đọc nhiều nhất"
+                    Family.DONGHUA -> "Xem nhiều nhất"
+                    else -> "Đang thịnh hành"
+                },
                 color = NflixTextMuted,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(start = 16.dp, top = 2.dp, bottom = 2.dp)
@@ -233,7 +299,8 @@ private fun RankRow(rank: Int, item: TitleItem, onClick: () -> Unit) {
                 fallback = item.thumbUrl,
                 contentDescription = item.name,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                title = item.name
             )
         }
         Spacer(Modifier.width(12.dp))

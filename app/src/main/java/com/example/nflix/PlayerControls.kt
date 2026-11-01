@@ -2,8 +2,10 @@ package com.example.nflix
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,8 +25,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -38,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
@@ -54,8 +56,11 @@ import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.player.PlayerUiState
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.detail.fmtNum
+import com.example.nflix.data.ServerStatus
+import com.example.nflix.ui.theme.NflixAmber
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixGreen
+import com.example.nflix.ui.theme.NflixRed
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
@@ -79,6 +84,77 @@ private fun qLabel(height: Int): String = when {
     else -> "FHD"
 }
 
+/**
+ * C5 (K11): custom seek bar with the design's 3 layers — remaining (dark
+ * grey) at the back, buffered (light grey) in the middle, played (violet)
+ * on top, plus the thumb. A tap or drag scrubs: onScrub fires while the
+ * finger moves, onScrubFinished once on release (same contract the old
+ * Material Slider gave the activity). Without buffered data the middle
+ * layer is simply empty and the bar behaves exactly as before.
+ */
+@Composable
+private fun BufferedSeekBar(
+    fraction: Float,
+    bufferedFraction: Float,
+    onScrub: (Float) -> Unit,
+    onScrubFinished: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    BoxWithConstraints(
+        modifier = modifier
+            .height(28.dp)
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        onScrub((offset.x / size.width).coerceIn(0f, 1f))
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        onScrub((change.position.x / size.width).coerceIn(0f, 1f))
+                    },
+                    onDragEnd = { onScrubFinished() },
+                    onDragCancel = { onScrubFinished() }
+                )
+            }
+    ) {
+        val trackShape = RoundedCornerShape(50)
+        // Remaining.
+        Box(
+            modifier = Modifier.fillMaxWidth().height(4.dp)
+                .align(Alignment.Center)
+                .clip(trackShape)
+                .background(Color(0xFF4A4A58))
+        )
+        // Buffered (never behind the played head visually — it starts at 0
+        // and the played layer paints over its own span).
+        if (bufferedFraction > 0f) {
+            Box(
+                modifier = Modifier.fillMaxWidth(bufferedFraction).height(4.dp)
+                    .align(Alignment.CenterStart)
+                    .clip(trackShape)
+                    .background(Color(0xFF9A9AA8))
+            )
+        }
+        // Played.
+        if (fraction > 0f) {
+            Box(
+                modifier = Modifier.fillMaxWidth(fraction).height(4.dp)
+                    .align(Alignment.CenterStart)
+                    .clip(trackShape)
+                    .background(NflixViolet)
+            )
+        }
+        // Thumb.
+        Box(
+            modifier = Modifier
+                .offset(x = (maxWidth - 14.dp) * fraction)
+                .size(14.dp)
+                .align(Alignment.CenterStart)
+                .background(NflixViolet, CircleShape)
+        )
+    }
+}
+
 @Composable
 internal fun PlayerControls(
     state: PlayerUiState,
@@ -86,6 +162,7 @@ internal fun PlayerControls(
     ended: Boolean,
     positionMs: Long,
     durationMs: Long,
+    bufferedMs: Long = 0,
     speed: Float,
     qualityLabel: String,
     statusText: String,
@@ -239,21 +316,22 @@ internal fun PlayerControls(
             }
         }
 
-        // Seek bar
+        // Seek bar — C5 (K11): three layers per the design (Màn 10):
+        // played violet · buffered light grey · remaining dark grey.
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(fmtT(positionMs), color = Color.White, fontSize = 12.sp)
-            Slider(
-                value = fraction,
-                onValueChange = onScrub,
-                onValueChangeFinished = onScrubFinished,
-                colors = SliderDefaults.colors(
-                    thumbColor = NflixViolet,
-                    activeTrackColor = NflixViolet,
-                    inactiveTrackColor = Color(0xFF4A4A58)
-                ),
+            BufferedSeekBar(
+                fraction = fraction,
+                bufferedFraction = if (durationMs > 0) {
+                    (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f)
+                } else {
+                    0f
+                },
+                onScrub = onScrub,
+                onScrubFinished = onScrubFinished,
                 modifier = Modifier.weight(1f).padding(horizontal = 10.dp)
             )
             Text(fmtT(durationMs), color = NflixTextMuted, fontSize = 12.sp)
@@ -413,13 +491,15 @@ internal fun ServerSheet(
     servers: List<ServerGroup>,
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    serverStatuses: Map<Int, ServerStatus> = emptyMap()
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text("Chọn server", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
             servers.forEachIndexed { index, server ->
+                val srvStatus = serverStatuses[index]
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
@@ -428,11 +508,25 @@ internal fun ServerSheet(
                         .padding(horizontal = 12.dp, vertical = 13.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(Modifier.size(8.dp).background(NflixGreen, CircleShape))
+                    Box(
+                        Modifier.size(8.dp).background(
+                            when (srvStatus?.state) {
+                                ServerStatus.State.OK -> NflixGreen
+                                ServerStatus.State.SLOW -> NflixAmber
+                                ServerStatus.State.ERROR -> NflixRed
+                                else -> NflixTextMuted
+                            },
+                            CircleShape
+                        )
+                    )
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(server.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("${server.episodes.size} tập · đang tốt · nhanh", color = NflixTextMuted, fontSize = 12.sp)
+                        Text(
+                            "${server.episodes.size} tập · " +
+                                (srvStatus?.describe() ?: "Chưa kiểm tra"),
+                            color = NflixTextMuted, fontSize = 12.sp
+                        )
                     }
                     if (index == selectedIndex) {
                         Icon(

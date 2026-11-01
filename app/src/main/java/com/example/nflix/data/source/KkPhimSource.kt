@@ -243,6 +243,22 @@ class KkPhimSource(
         }.take(limit)
     }
 
+    /**
+     * "Phim sắp chiếu" (verified live 2026-11-01: /v1/api/danh-sach/phim-sap-chieu,
+     * 79 titles, episode_current = "Trailer"). These titles have metadata +
+     * a trailer but NO playable episodes yet — see detail() handling.
+     */
+    suspend fun comingSoon(page: Int = 1, limit: Int = 24): List<TitleItem> {
+        val root = getJson("$BASE/v1/api/danh-sach/phim-sap-chieu?page=$page&limit=$limit")
+        return parseList(root)
+    }
+
+    /** Category listing ("/v1/api/the-loai/{slug}", verified live) — powers "Cùng thể loại". */
+    suspend fun byCategory(slug: String, page: Int = 1, limit: Int = 24): List<TitleItem> {
+        val root = getJson("$BASE/v1/api/the-loai/$slug?page=$page&limit=$limit")
+        return parseList(root)
+    }
+
     suspend fun search(keyword: String, page: Int = 1, limit: Int = 24): List<TitleItem> {
         val kw = java.net.URLEncoder.encode(keyword, "UTF-8")
         val root = getJson("$BASE/v1/api/tim-kiem?keyword=$kw&page=$page&limit=$limit")
@@ -269,6 +285,13 @@ class KkPhimSource(
             val episodes = (0 until dataArr.length()).mapNotNull { e ->
                 val ep = dataArr.optJSONObject(e) ?: return@mapNotNull null
                 val label = ep.optString("name")
+                // Coming-soon titles ship one placeholder row whose name
+                // and links are ALL empty — not a playable episode.
+                if (label.isBlank() && ep.optString("link_m3u8").isBlank() &&
+                    ep.optString("link_embed").isBlank()
+                ) {
+                    return@mapNotNull null
+                }
                 EpisodeItem(
                     label = label,
                     number = Regex("\\d+").find(label)?.value?.toFloatOrNull() ?: (e + 1).toFloat(),
@@ -285,7 +308,22 @@ class KkPhimSource(
         val released = servers.maxOfOrNull { g ->
             g.episodes.maxOfOrNull { it.number } ?: 0f
         }?.toInt() ?: 0
-        val total = if (released > 0) released else itemJson.optInt("episode_total")
+        // No playable server at all = nothing released yet (coming-soon
+        // titles report a placeholder episode_total of 1) — report 0 so the
+        // follow baseline stays 0 and the worker can catch episode 1.
+        val total = if (servers.isEmpty()) 0
+        else if (released > 0) released
+        else itemJson.optInt("episode_total")
+        // Category (label, slug) pairs — the "Cùng thể loại" shelf keys off
+        // the first slug. parseItem only kept the labels, so read them here.
+        val genreLinks = mutableListOf<Pair<String, String>>()
+        val cats = itemJson.optJSONArray("category") ?: JSONArray()
+        for (i in 0 until cats.length()) {
+            val c = cats.optJSONObject(i) ?: continue
+            val label = c.optString("name")
+            val slug = c.optString("slug")
+            if (label.isNotBlank() && slug.isNotBlank()) genreLinks.add(label to slug)
+        }
         return TitleDetail(
             item = base.copy(episodeCount = if (total > 0) total else base.episodeCount),
             description = itemJson.optString("content").trim(),
@@ -298,7 +336,9 @@ class KkPhimSource(
             durationLabel = itemJson.optString("time"),
             actors = jsonStringList(itemJson.optJSONArray("actor")),
             directors = jsonStringList(itemJson.optJSONArray("director")),
-            servers = servers
+            servers = servers,
+            trailerUrl = itemJson.optString("trailer_url"),
+            genreLinks = genreLinks
         )
     }
 

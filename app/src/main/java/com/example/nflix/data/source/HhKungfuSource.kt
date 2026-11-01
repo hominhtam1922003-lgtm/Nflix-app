@@ -107,6 +107,43 @@ class HhKungfuSource(
     suspend fun latest(page: Int = 1): List<TitleItem> =
         parseItems(getDoc(if (page <= 1) "/moi-cap-nhat" else "/moi-cap-nhat/page/$page"))
 
+    /**
+     * "Đã hoàn thành" listing (verified live 2026-11-01: /hoan-thanh,
+     * 16 .halim-item per page, paginated /hoan-thanh/page/<n>).
+     */
+    suspend fun completed(page: Int = 1): List<TitleItem> =
+        parseItems(getDoc(if (page <= 1) "/hoan-thanh" else "/hoan-thanh/page/$page"))
+
+    /**
+     * "Xem nhiều" chart (verified live 2026-11-01: /top-xem-nhieu, same
+     * .halim-item grid) — a pure most-viewed list, unlike trending() which
+     * mixes the whole home page.
+     */
+    suspend fun topViewed(page: Int = 1): List<TitleItem> =
+        parseItems(getDoc(if (page <= 1) "/top-xem-nhieu" else "/top-xem-nhieu/page/$page"))
+
+    /** Category listing — same .halim-item grid as the other listings. */
+    suspend fun byCategory(slug: String, page: Int = 1): List<TitleItem> =
+        parseItems(getDoc(if (page <= 1) "/category/$slug" else "/category/$slug/page/$page"))
+
+    /**
+     * Category menu (label to slug) parsed from the home page nav — the list
+     * is whatever the site itself ships in its menu, not a hardcoded copy.
+     */
+    suspend fun genreLinks(): List<Pair<String, String>> {
+        val doc = getDoc("/")
+        val out = mutableListOf<Pair<String, String>>()
+        for (a in doc.select("a[href*=/category/]")) {
+            val href = a.attr("href")
+            val slug = href.trimEnd('/').substringAfterLast('/')
+            val label = a.text().trim()
+            if (slug.isNotBlank() && label.isNotBlank() && out.none { it.second == slug }) {
+                out.add(label to slug)
+            }
+        }
+        return out
+    }
+
     suspend fun search(keyword: String): List<TitleItem> {
         val q = java.net.URLEncoder.encode(keyword, "UTF-8")
         return parseItems(getDoc("/?s=$q"))
@@ -212,6 +249,19 @@ class HhKungfuSource(
             servers.any { it.langKey == "vs" } -> "VS"
             else -> ""
         }
+        // Genres live in rel="tag" links on the detail page — only the ones
+        // pointing at /category/<slug> are genres; the /tag/ ones are title
+        // tags (verified live 2026-11-01, research A3/B2).
+        val genreLinks = mutableListOf<Pair<String, String>>()
+        for (a in doc.select("a[rel=tag]")) {
+            val href = a.attr("href")
+            if (!href.contains("/category/")) continue
+            val gSlug = href.trimEnd('/').substringAfterLast('/')
+            val gLabel = a.text().trim()
+            if (gSlug.isNotBlank() && gLabel.isNotBlank() && genreLinks.none { it.second == gSlug }) {
+                genreLinks.add(gLabel to gSlug)
+            }
+        }
         val item = TitleItem(
             id = "${Family.DONGHUA.name}:$SOURCE_ID:$slug",
             family = Family.DONGHUA,
@@ -223,9 +273,16 @@ class HhKungfuSource(
             quality = quality,
             versionBadge = versionBadge,
             latestLabel = if (total > 0) "Tập $total" else "",
-            episodeCount = total
+            episodeCount = total,
+            genres = genreLinks.map { it.first }
         )
-        return TitleDetail(item = item, description = desc, totalCount = total, servers = servers)
+        return TitleDetail(
+            item = item,
+            description = desc,
+            totalCount = total,
+            servers = servers,
+            genreLinks = genreLinks
+        )
     }
 
     /**

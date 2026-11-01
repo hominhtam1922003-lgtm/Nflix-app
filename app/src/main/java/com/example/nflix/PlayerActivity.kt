@@ -70,7 +70,10 @@ import com.example.nflix.ui.theme.NflixRed
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixTheme
 import com.example.nflix.ui.theme.NflixViolet
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Video player screen (landscape, PiP-capable) — Màn 10. */
 class PlayerActivity : ComponentActivity() {
@@ -182,6 +185,7 @@ private fun PlayerScreen(
     var ended by remember { mutableStateOf(false) }
     var positionMs by remember { mutableLongStateOf(0) }
     var durationMs by remember { mutableLongStateOf(0) }
+    var bufferedMs by remember { mutableLongStateOf(0) }
     var speed by remember { mutableFloatStateOf(1f) }
     var heights by remember { mutableStateOf<List<Int>>(emptyList()) }
     var qualityCap by remember { mutableIntStateOf(-1) } // -1 = no cap (Cao nhất)
@@ -196,6 +200,8 @@ private fun PlayerScreen(
     var showQuickSettings by remember { mutableStateOf(false) }
     var portrait by remember { mutableStateOf(false) }
     var playbackError by remember { mutableStateOf<String?>(null) }
+    var reportSaved by remember { mutableStateOf(false) }
+    val playerScope = androidx.compose.runtime.rememberCoroutineScope()
     var retryKey by remember { mutableIntStateOf(0) }
     var autoSwitchedSlug by remember { mutableStateOf<String?>(null) }
 
@@ -213,6 +219,7 @@ private fun PlayerScreen(
         if (state.kind != PlaybackKind.STREAM || ep.streamUrl.isBlank()) return@LaunchedEffect
         ended = false
         playbackError = null
+        reportSaved = false
         val dataSource = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
             .setAllowCrossProtocolRedirects(true)
@@ -303,6 +310,8 @@ private fun PlayerScreen(
         while (true) {
             positionMs = exo.currentPosition.coerceAtLeast(0)
             durationMs = exo.duration.coerceAtLeast(0)
+            // C5 (K11): real buffered position for the seek bar's middle layer.
+            bufferedMs = exo.bufferedPosition.coerceAtLeast(0)
             ticks++
             if (ticks % 10 == 0 && durationMs > 0) {
                 viewModel.saveProgress(positionMs, durationMs)
@@ -434,6 +443,37 @@ private fun PlayerScreen(
                         )
                     }
                 }
+                Spacer(Modifier.height(12.dp))
+                // 0.4: report THIS error for real — title, episode, server
+                // and the exact message go to the local report store.
+                Text(
+                    if (reportSaved) "Đã ghi báo lỗi ✓" else "Báo lỗi này",
+                    color = if (reportSaved) NflixGreen else Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable(enabled = !reportSaved) {
+                        val s = state
+                        val errorText = playbackError ?: ""
+                        playerScope.launch {
+                            withContext(Dispatchers.IO) {
+                                com.example.nflix.data.ReportStore.add(
+                                    context,
+                                    com.example.nflix.data.ErrorReport(
+                                        timeEpochSec = System.currentTimeMillis() / 1000,
+                                        family = s.item?.family?.name ?: "",
+                                        titleId = s.item?.id ?: titleId,
+                                        titleName = s.item?.name ?: "",
+                                        unitLabel = s.episode?.label ?: "",
+                                        server = s.detail?.servers
+                                            ?.getOrNull(s.serverIndex)?.name ?: "",
+                                        message = errorText
+                                    )
+                                )
+                            }
+                            reportSaved = true
+                        }
+                    }
+                )
             }
         }
 
@@ -475,6 +515,7 @@ private fun PlayerScreen(
                 ended = ended,
                 positionMs = if (scrubbing != null) (scrubbing!! * durationMs).toLong() else positionMs,
                 durationMs = durationMs,
+                bufferedMs = bufferedMs,
                 speed = speed,
                 qualityLabel = currentQualityLabel,
                 statusText = when {
@@ -539,7 +580,8 @@ private fun PlayerScreen(
                 showServers = false
                 viewModel.switchServer(idx, exo.currentPosition)
             },
-            onDismiss = { showServers = false }
+            onDismiss = { showServers = false },
+            serverStatuses = state.serverStatuses
         )
     }
     if (showSpeed) {

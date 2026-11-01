@@ -22,6 +22,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +60,9 @@ private val CardShape = RoundedCornerShape(14.dp)
  * Image with a fallback chain: some KKPhim poster files fail
  * to load on-device while the sibling thumb works — try primary, then the
  * fallback URL, so a card never sits blank when either image is alive.
+ * C4 (K5): when BOTH urls fail the frame no longer stays an anonymous grey
+ * box — it shows a named placeholder (surface bg + title initials) at the
+ * exact same size, and tapping it retries the whole chain.
  */
 @Composable
 fun FallbackImage(
@@ -61,22 +70,94 @@ fun FallbackImage(
     fallback: String,
     contentDescription: String?,
     modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    title: String = ""
 ) {
-    val modelState = androidx.compose.runtime.remember(primary, fallback) {
-        androidx.compose.runtime.mutableStateOf(primary.ifBlank { fallback })
+    val modelState = remember(primary, fallback) {
+        mutableStateOf(primary.ifBlank { fallback })
     }
-    AsyncImage(
-        model = modelState.value,
-        contentDescription = contentDescription,
-        contentScale = contentScale,
-        modifier = modifier,
-        onError = {
-            if (modelState.value != fallback && fallback.isNotBlank()) {
-                modelState.value = fallback
+    var failed by remember(primary, fallback) { mutableStateOf(false) }
+    var retryKey by remember(primary, fallback) { mutableIntStateOf(0) }
+    Box(modifier = modifier) {
+        if (failed) {
+            DeadCoverPlaceholder(
+                title = title,
+                modifier = Modifier.fillMaxSize(),
+                onRetry = {
+                    failed = false
+                    modelState.value = primary.ifBlank { fallback }
+                    retryKey++
+                }
+            )
+        } else {
+            key(retryKey) {
+                AsyncImage(
+                    model = modelState.value,
+                    contentDescription = contentDescription,
+                    contentScale = contentScale,
+                    modifier = Modifier.fillMaxSize(),
+                    onError = {
+                        if (modelState.value != fallback && fallback.isNotBlank()) {
+                            modelState.value = fallback
+                        } else {
+                            failed = true
+                        }
+                    }
+                )
             }
         }
-    )
+    }
+}
+
+/**
+ * C4 last-resort cover: named placeholder inside the image frame (never an
+ * anonymous blank). Initials always fit; the full name and the retry hint
+ * only appear when the frame is big enough to hold them.
+ */
+@Composable
+private fun DeadCoverPlaceholder(
+    title: String,
+    modifier: Modifier = Modifier,
+    onRetry: () -> Unit
+) {
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        modifier = modifier
+            .background(NflixSurface)
+            .clickable(onClick = onRetry)
+            .padding(6.dp)
+    ) {
+        val initials = title.split(" ")
+            .filter { it.isNotBlank() }
+            .take(2)
+            .map { it.first().uppercaseChar() }
+            .joinToString("")
+        Column(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                initials.ifBlank { "?" },
+                color = NflixViolet,
+                fontSize = if (maxWidth >= 90.dp) 20.sp else 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (title.isNotBlank() && maxWidth >= 70.dp) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    title,
+                    color = NflixTextMuted,
+                    fontSize = 9.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+            if (maxHeight >= 110.dp) {
+                Spacer(Modifier.height(4.dp))
+                Text("Chạm để tải lại", color = NflixTextMuted, fontSize = 9.sp)
+            }
+        }
+    }
 }
 
 @Composable
@@ -151,6 +232,33 @@ fun PlusPill(count: Int, unit: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * C1 (K8): the "+N" pill grown up — when the baseline is known it names the
+ * new range ("Tập 76–78 mới", single: "Tập 76 mới") instead of a bare count.
+ * seen/latest are COUNTS and unit numbers run 1..N in the app's positional
+ * model, so seen+1..latest IS the new range. Unknown baseline (seen = 0)
+ * falls back to the "+N" form. Display only — the seen/latest bookkeeping
+ * and the user's "only real watching consumes" rule are untouched.
+ */
+@Composable
+fun NewUnitsPill(seenCount: Int, latestCount: Int, unit: String, modifier: Modifier = Modifier) {
+    val count = (latestCount - seenCount).coerceAtLeast(0)
+    if (count <= 0) return
+    val unitCap = unit.replaceFirstChar { it.uppercase() }
+    val text = when {
+        seenCount <= 0 -> "+$count $unit"
+        count == 1 -> "$unitCap $latestCount mới"
+        else -> "$unitCap ${seenCount + 1}–$latestCount mới"
+    }
+    Box(
+        modifier = modifier
+            .background(NflixOrange, RoundedCornerShape(50))
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    ) {
+        Text(text, color = Color(0xFF221503), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
 /** Poster card 2:3 with the design's badges; optional progress bar (Xem tiếp). */
 @Composable
 fun PosterCard(
@@ -172,7 +280,8 @@ fun PosterCard(
                 primary = item.posterUrl,
                 fallback = item.thumbUrl,
                 contentDescription = item.name,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                title = item.name
             )
             if (item.isHot) {
                 PosterHotBadge(Modifier.align(Alignment.TopStart).padding(6.dp))
@@ -265,7 +374,9 @@ fun UpdatedRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     newCount: Int = 0,
-    unit: String = "tập"
+    unit: String = "tập",
+    newSeen: Int = 0,
+    newLatest: Int = 0
 ) {
     Row(
         modifier = modifier
@@ -284,7 +395,8 @@ fun UpdatedRow(
                 primary = item.posterUrl,
                 fallback = item.thumbUrl,
                 contentDescription = item.name,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                title = item.name
             )
         }
         Spacer(Modifier.width(12.dp))
@@ -319,7 +431,11 @@ fun UpdatedRow(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                if (newCount > 0) PlusPill(newCount, unit)
+                if (newCount > 0) {
+                    // C1: name the new range when the baseline is known.
+                    if (newSeen > 0 && newLatest > newSeen) NewUnitsPill(newSeen, newLatest, unit)
+                    else PlusPill(newCount, unit)
+                }
                 if (time.isNotBlank()) {
                     Text(time, color = NflixTextMuted, fontSize = 11.sp, maxLines = 1)
                 }

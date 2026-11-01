@@ -43,16 +43,33 @@ class TruyenQqSource(
     @Volatile
     private var activeHost: String = hosts.first()
 
+    // C3 (K4): the twin-host fallback used to be silent — the tab now shows
+    // which host is actually serving and how long the last page took.
+    @Volatile
+    private var lastLoadMs: Long = -1L
+
+    /** Display host (no scheme) that served the most recent successful page. */
+    fun statusHostLabel(): String = activeHost
+        .removePrefix("https://").removePrefix("http://").trimEnd('/')
+
+    /** True when the twin mirror is serving because the primary failed. */
+    fun statusOnFallback(): Boolean = activeHost != hosts.first()
+
+    /** Duration of the most recent successful page fetch, -1 when none yet. */
+    fun statusLastLoadMs(): Long = lastLoadMs
+
     private suspend fun getDoc(path: String): Document = withContext(Dispatchers.IO) {
         val candidates = listOf(activeHost) + hosts.filter { it != activeHost }
         var lastError: Exception? = null
         for (host in candidates) {
             try {
                 val req = Request.Builder().url(host + path).get().build()
+                val started = System.nanoTime()
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                     val html = resp.body?.string().orEmpty()
                     activeHost = host
+                    lastLoadMs = (System.nanoTime() - started) / 1_000_000
                     return@withContext Jsoup.parse(html, host)
                 }
             } catch (e: Exception) {
@@ -95,6 +112,55 @@ class TruyenQqSource(
      *  The site only renders the listing when ?page= is present — even for page 1. */
     suspend fun byGenre(genreSlug: String, page: Int = 1): List<TitleItem> =
         parseCards(getDoc("/the-loai/$genreSlug?page=$page"))
+
+    /**
+     * "Truyện Full đã hoàn thành" listing (verified live 2026-11-01:
+     * /truyen-full, cards inside .listing, ?page= paging; page 1 redirects
+     * to the bare path, which OkHttp follows).
+     */
+    suspend fun completed(page: Int = 1): List<TitleItem> {
+        val doc = getDoc(if (page <= 1) "/truyen-full" else "/truyen-full?page=$page")
+        return parseCards(doc.selectFirst(".listing") ?: doc)
+    }
+
+    /**
+     * "Truyện mới ra mắt" listing (verified live 2026-11-01: /truyen-moi,
+     * 34 cards inside .listing) — new series, distinct from "Mới cập nhật".
+     */
+    suspend fun newest(page: Int = 1): List<TitleItem> {
+        val doc = getDoc(if (page <= 1) "/truyen-moi" else "/truyen-moi?page=$page")
+        return parseCards(doc.selectFirst(".listing") ?: doc)
+    }
+
+    /**
+     * Widget "TOP TRUYỆN ĐỌC NHIỀU" on the home page sidebar — the Truyện
+     * family's only real readership chart (verified live 2026-11-01).
+     * Items carry name + slug ONLY (no covers); callers cross-fill covers
+     * from other lists by slug. Rank = document order (deduped — the
+     * widget itself repeats one entry).
+     */
+    suspend fun topRead(): List<TitleItem> {
+        val doc = getDoc("/")
+        val out = mutableListOf<TitleItem>()
+        for (a in doc.select(".widget.suggest .item a[href]")) {
+            val href = a.attr("href")
+            if (!href.startsWith("/") || href.contains("the-loai")) continue
+            val slug = slugOf(href)
+            if (slug.isBlank() || slug in RESERVED_SLUGS || out.any { it.slug == slug }) continue
+            val name = a.attr("title").ifBlank { a.text() }.trim()
+            if (name.isBlank()) continue
+            out.add(
+                TitleItem(
+                    id = "${Family.TRUYEN.name}:$SOURCE_ID:$slug",
+                    family = Family.TRUYEN,
+                    sourceId = SOURCE_ID,
+                    slug = slug,
+                    name = name
+                )
+            )
+        }
+        return out
+    }
 
     private fun parseCards(scope: org.jsoup.nodes.Element): List<TitleItem> {
         val seen = LinkedHashMap<String, TitleItem>()
@@ -160,6 +226,21 @@ class TruyenQqSource(
         }
         chapters.sortByDescending { it.number }
         val total = chapters.maxOfOrNull { it.number }?.toInt() ?: chapters.size
+        // Genres: the "Thể loại:" row inside .book-info (scoped there — the
+        // header menu carries /the-loai/ links for every genre on the site).
+        val genreLinks = mutableListOf<Pair<String, String>>()
+        val infoEl = doc.selectFirst(".book-info")
+        if (infoEl != null) {
+            for (a in infoEl.select("a[href*=/the-loai/]")) {
+                val href = a.attr("href")
+                val gSlug = href.substringAfter("/the-loai/").trimEnd('/')
+                    .substringBefore('/').substringBefore('?')
+                val gLabel = a.text().trim()
+                if (gSlug.isNotBlank() && gLabel.isNotBlank() && genreLinks.none { it.second == gSlug }) {
+                    genreLinks.add(gLabel to gSlug)
+                }
+            }
+        }
         val item = TitleItem(
             id = "${Family.TRUYEN.name}:$SOURCE_ID:$slug",
             family = Family.TRUYEN,
@@ -169,7 +250,8 @@ class TruyenQqSource(
             posterUrl = ogImage,
             thumbUrl = ogImage,
             latestLabel = if (total > 0) "Chap $total" else "",
-            episodeCount = total
+            episodeCount = total,
+            genres = genreLinks.map { it.first }
         )
         val labelStatus = doc.selectFirst(".book-info .label-status")?.text()?.trim().orEmpty()
         val status = when {
@@ -178,7 +260,14 @@ class TruyenQqSource(
             desc.contains("Hoàn thành", true) -> "Hoàn thành"
             else -> ""
         }
-        return TitleDetail(item = item, description = desc, status = status, totalCount = total, chapters = chapters)
+        return TitleDetail(
+            item = item,
+            description = desc,
+            status = status,
+            totalCount = total,
+            chapters = chapters,
+            genreLinks = genreLinks
+        )
     }
 
     /** Page image URLs of one chapter, in reading order. */

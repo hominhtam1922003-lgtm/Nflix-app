@@ -8,13 +8,20 @@ import com.example.nflix.data.local.watchedSet
 import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.Family
+import com.example.nflix.data.ServerProbe
+import com.example.nflix.data.ServerStatus
 import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
+import com.example.nflix.data.source.CobePlay
+import com.example.nflix.data.source.CobeSource
+import com.example.nflix.data.source.KkPhimSource
+import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.toEntity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -36,7 +43,12 @@ data class DetailUiState(
     val serverIndex: Int = 0,
     val sortDesc: Boolean = true,
     val rangeIndex: Int = 0,
-    val jumpError: String = ""
+    val jumpError: String = "",
+    /** Last real per-server measurement (server index to status); empty = not measured yet. */
+    val serverStatuses: Map<Int, ServerStatus> = emptyMap(),
+    val probingServers: Boolean = false,
+    /** "Cùng thể loại" shelf at the end of the page. */
+    val related: List<TitleItem> = emptyList()
 )
 
 class DetailViewModel(
@@ -46,6 +58,10 @@ class DetailViewModel(
 
     private val _state = MutableStateFlow(DetailUiState())
     val state: StateFlow<DetailUiState> = _state.asStateFlow()
+
+    /** True once the user picks a server by hand — auto-fastest must not override that. */
+    private var userPickedServer = false
+    private var autoFastest = true
 
     val isComic: Boolean = item.family == Family.TRUYEN || item.family == Family.MANHWA
 
@@ -57,12 +73,15 @@ class DetailViewModel(
         viewModelScope.launch {
             try {
                 val detail = when (item.sourceId) {
-                    "kkphim" -> app.kkPhim.detail(item.slug)
+                    // Đợt 4: Phim/Anime go through the merged front
+                    // (KKPhim + Cobe server groups); cobe-only titles
+                    // route inside detailFor to the pure cobe detail.
+                    "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)
                     "truyenqq" -> app.truyenQq.detail(item.slug)
                     else -> when (item.family) {
-                        Family.PHIM, Family.ANIME -> app.kkPhim.detail(item.slug)
+                        Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
                         Family.DONGHUA -> app.hhKungfu.detail(item.slug)
                         Family.MANHWA -> app.netTruyen.detail(item.slug)
                         Family.TRUYEN -> app.truyenQq.detail(item.slug)
@@ -75,6 +94,21 @@ class DetailViewModel(
                 _state.update {
                     it.copy(loading = false, detail = detail, serverIndex = preferred)
                 }
+                // 0.1/0.2: when the "Tự chọn server sống nhanh nhất" setting
+                // is on, really measure every server now (in the background)
+                // and adopt the fastest live one. Statuses feed the server
+                // bar and the sheet — no more hardcoded "đang tốt · nhanh".
+                if (detail.servers.isNotEmpty()) {
+                    viewModelScope.launch {
+                        autoFastest = try {
+                            app.settings.flow.first().autoFastestServer
+                        } catch (e: Exception) {
+                            true
+                        }
+                        if (autoFastest) measureServers(autoSelect = true)
+                    }
+                }
+                loadRelated(detail)
                 // Refresh the released count for a TRACKED title (favorited,
                 // notify on, or started). "Có tập mới" = units the SOURCE added
                 // after tracking began (user rule) — merely opening this page
@@ -103,6 +137,125 @@ class DetailViewModel(
     }
 
     fun server(): ServerGroup? = _state.value.detail?.servers?.getOrNull(_state.value.serverIndex)
+
+    /**
+     * A4: a KKPhim "sắp chiếu" title — detail loaded fine but there is no
+     * playable server yet (trailer only). The page switches its main button
+     * to "Theo dõi" and hides the empty episode UI. Comics/Donghua never
+     * count: their empty lists mean a load failure, not a pre-release.
+     */
+    fun isAwaitingRelease(): Boolean {
+        val d = _state.value.detail ?: return false
+        if (isComic) return false
+        val kk = item.sourceId == "kkphim" || item.family == Family.PHIM || item.family == Family.ANIME
+        return kk && d.servers.isEmpty()
+    }
+
+    /**
+     * Measure every server of this title in parallel (0.1). Results land in
+     * state.serverStatuses for the bar/sheet (0.2). With [autoSelect] and the
+     * setting on, the fastest LIVE server becomes the selection — unless the
+     * user already picked one by hand. Runs in a coroutine; never blocks UI.
+     */
+    fun measureServers(autoSelect: Boolean = false) {
+        val detail = _state.value.detail ?: return
+        if (detail.servers.isEmpty() || _state.value.probingServers) return
+        _state.update { it.copy(probingServers = true) }
+        viewModelScope.launch {
+            val target = resumeUnit()?.number ?: 0f
+            val statuses = ServerProbe.probeAll(detail.servers, target) { ep -> probeUrl(ep) }
+            _state.update { s ->
+                var idx = s.serverIndex
+                if (autoSelect && autoFastest && !userPickedServer) {
+                    val best = statuses.entries
+                        .filter { it.value.isAlive }
+                        .minByOrNull { it.value.ms ?: Long.MAX_VALUE }
+                    if (best != null) idx = best.key
+                }
+                s.copy(probingServers = false, serverStatuses = statuses, serverIndex = idx)
+            }
+        }
+    }
+
+    /** The URL worth timing for one episode (Donghua resolves its embed iframe). */
+    private suspend fun probeUrl(ep: EpisodeItem): String? =
+        if (CobeSource.isLocator(ep.slug)) {
+            // Đợt 4: timing a cobe server means resolving its play link —
+            // the resolve time counts into the measurement, like Donghua.
+            try {
+                when (val target = app.cobe.resolvePlay(ep.slug)) {
+                    is CobePlay.Hls -> target.url
+                    is CobePlay.Embed -> target.url
+                }
+            } catch (e: Exception) {
+                ep.embedUrl.ifBlank { null }
+            }
+        } else if (item.sourceId == "hhkungfu" || item.family == Family.DONGHUA) {
+            try {
+                app.hhKungfu.resolveEmbed(ep.slug)
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            ep.streamUrl.ifBlank { ep.embedUrl.ifBlank { null } }
+        }
+
+    /** A2: load the "Cùng thể loại" shelf from the title's first genre. */
+    private fun loadRelated(detail: TitleDetail) {
+        viewModelScope.launch {
+            val related = try {
+                fetchRelated(detail)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            if (related.isNotEmpty()) {
+                app.database.titleDao().upsertAll(related.map { it.toEntity() })
+                _state.update { it.copy(related = related) }
+            }
+        }
+    }
+
+    private suspend fun fetchRelated(detail: TitleDetail): List<TitleItem> {
+        val self = detail.item
+        val pool: List<TitleItem> = when (self.family) {
+            Family.PHIM -> {
+                val slug = detail.genreLinks.firstOrNull()?.second
+                    ?: kkGenreSlug(self.genres.firstOrNull())
+                    ?: return emptyList()
+                app.kkPhim.byCategory(slug, page = 1)
+            }
+            Family.ANIME -> {
+                val slug = detail.genreLinks.firstOrNull()?.second
+                    ?: kkGenreSlug(self.genres.firstOrNull())
+                    ?: return emptyList()
+                app.kkPhim.listFiltered(
+                    kind = "hoat-hinh", category = slug, country = "nhat-ban", page = 1
+                )
+            }
+            Family.DONGHUA -> {
+                val slug = detail.genreLinks.firstOrNull()?.second ?: return emptyList()
+                app.hhKungfu.byCategory(slug, page = 1)
+            }
+            Family.MANHWA -> {
+                // Skip the "Manhwa" umbrella category itself — a genre shelf
+                // keyed on it would just be the whole catalog again.
+                val link = detail.genreLinks.firstOrNull { it.second != NetTruyenSource.MANHWA_GENRE }
+                    ?: return emptyList()
+                app.netTruyen.byGenre(link.second, page = 1)
+            }
+            Family.TRUYEN -> {
+                val slug = detail.genreLinks.firstOrNull()?.second ?: return emptyList()
+                app.truyenQq.byGenre(slug, page = 1)
+            }
+        }
+        return pool.filter { it.slug != self.slug }.take(12)
+    }
+
+    /** KKPhim genre label to slug via the verified CATEGORIES table (fallback path). */
+    private fun kkGenreSlug(name: String?): String? {
+        if (name.isNullOrBlank()) return null
+        return KkPhimSource.CATEGORIES.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
+    }
 
     /** All units ascending by number. */
     fun allUnits(): List<GridUnit> {
@@ -169,6 +322,10 @@ class DetailViewModel(
     }
 
     fun mainButtonLabel(): String {
+        if (isAwaitingRelease()) {
+            val st0 = _state.value.userState
+            return if (st0?.notifyOn == true || st0?.following == true) "Đang theo dõi" else "Theo dõi"
+        }
         val unitWord = if (isComic) "Chap" else "Tập"
         val verb = if (isComic) "Đọc" else "Xem"
         val resume = resumeUnit()
@@ -182,6 +339,7 @@ class DetailViewModel(
     }
 
     fun selectServer(index: Int) {
+        userPickedServer = true
         _state.update { it.copy(serverIndex = index, rangeIndex = 0) }
     }
 

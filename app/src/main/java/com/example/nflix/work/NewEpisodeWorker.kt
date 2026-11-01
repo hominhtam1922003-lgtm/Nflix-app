@@ -18,6 +18,12 @@ import kotlinx.coroutines.flow.first
  * For every followed title, re-reads its source detail; when the source has
  * more units than last seen, updates latestCount (which drives the orange
  * "+N" pills and the bell dot) and posts ONE summary notification.
+ *
+ * C2 (K9): the old hard take(30) meant every tracked title past #30 was
+ * NEVER checked. A run still checks at most [BATCH_SIZE] titles, but the
+ * batch is chosen by fair rotation — the least-recently-checked titles go
+ * first (stamps in DataStore), so over successive runs every title is
+ * covered. Baseline/notification logic is unchanged.
  */
 class NewEpisodeWorker(
     context: Context,
@@ -30,14 +36,26 @@ class NewEpisodeWorker(
         if (!settings.notifyNewEpisode) return Result.success()
 
         val dao = app.database.userStateDao()
-        val states = dao.trackedOnce().take(30)
+        val all = dao.trackedOnce()
+        val stamps = app.settings.workerStamps.first()
+        // Never-checked titles (stamp 0) first, then stalest-checked.
+        val states = all
+            .sortedBy { stamps[it.titleId] ?: 0L }
+            .take(BATCH_SIZE)
+        android.util.Log.d(
+            TAG,
+            "Đang canh tổng ${all.size} bộ; lượt này kiểm tra ${states.size} bộ"
+        )
         val updatedNames = mutableListOf<String>()
         for (st in states) {
             val entity = app.database.titleDao().observe(st.titleId).first() ?: continue
             val item = entity.toItem()
             val total = runCatching {
                 val detail = when (item.sourceId) {
-                    "kkphim" -> app.kkPhim.detail(item.slug)
+                    // Đợt 4: Phim/Anime totals come from the MERGED pool —
+                    // when cobe releases an episode first, the bell catches
+                    // it. Baseline/seen semantics are unchanged.
+                    "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)
                     else -> app.truyenQq.detail(item.slug)
@@ -65,6 +83,14 @@ class NewEpisodeWorker(
         if (updatedNames.isNotEmpty()) {
             notifyNewEpisodes(app, updatedNames, settings.lockScreenNotif)
         }
+        // C2: stamp every attempted title so the next run rotates to the
+        // ones left behind; prune stamps of titles no longer tracked.
+        val nowSec = System.currentTimeMillis() / 1000
+        val trackedIds = all.map { it.titleId }.toSet()
+        val newStamps = stamps.toMutableMap()
+        newStamps.keys.retainAll(trackedIds)
+        states.forEach { newStamps[it.titleId] = nowSec }
+        runCatching { app.settings.setWorkerStamps(newStamps) }
         return Result.success()
     }
 
@@ -99,5 +125,9 @@ class NewEpisodeWorker(
 
     companion object {
         const val NOTIFICATION_ID = 2001
+        private const val TAG = "NewEpisodeWorker"
+
+        /** Max titles checked per run — rotation (not a hard cap) covers the rest. */
+        private const val BATCH_SIZE = 30
     }
 }

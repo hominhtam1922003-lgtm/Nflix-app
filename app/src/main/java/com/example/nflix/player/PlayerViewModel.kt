@@ -3,11 +3,15 @@ package com.example.nflix.player
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
+import com.example.nflix.data.ServerProbe
+import com.example.nflix.data.ServerStatus
 import com.example.nflix.data.local.UserStateEntity
 import com.example.nflix.data.local.watchedSet
 import com.example.nflix.data.local.withWatched
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.ServerGroup
+import com.example.nflix.data.source.CobePlay
+import com.example.nflix.data.source.CobeSource
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
@@ -31,7 +35,9 @@ data class PlayerUiState(
     val embedUrl: String = "",
     val resumePositionMs: Long = 0,
     val userState: UserStateEntity? = null,
-    val error: String = ""
+    val error: String = "",
+    /** Last real per-server measurement for the server sheet (0.1/0.2). */
+    val serverStatuses: Map<Int, ServerStatus> = emptyMap()
 )
 
 class PlayerViewModel(
@@ -52,7 +58,10 @@ class PlayerViewModel(
                     ?: throw IllegalStateException("Không thấy thông tin bộ này")
                 val detail = when (item.sourceId) {
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
-                    else -> app.kkPhim.detail(item.slug)
+                    // Đợt 4: same merged front as the Detail screen, so
+                    // the server pool (KKPhim + Cobe groups) matches what
+                    // the user picked from; cobe-only titles stay cobe.
+                    else -> app.mergedPhim.detailFor(item)
                 }
                 app.database.titleDao().upsert(detail.item.toEntity())
                 val st = app.database.userStateDao().get(titleId)
@@ -85,6 +94,50 @@ class PlayerViewModel(
                     )
                 }
                 applyEpisode(detail.item, episode)
+                // 0.1: with the auto-fastest setting on, measure the other
+                // servers in the background so the server sheet shows real
+                // statuses/ms instead of a hardcoded claim. Playback itself
+                // is untouched — error-driven auto-switch already exists.
+                if (detail.servers.size > 1) {
+                    viewModelScope.launch {
+                        val auto = try {
+                            app.settings.flow.first().autoFastestServer
+                        } catch (e: Exception) {
+                            true
+                        }
+                        if (auto) {
+                            val statuses = ServerProbe.probeAll(
+                                detail.servers, episode.number
+                            ) { ep ->
+                                when {
+                                    CobeSource.isLocator(ep.slug) ->
+                                        try {
+                                            when (
+                                                val target = app.cobe.resolvePlay(ep.slug)
+                                            ) {
+                                                is CobePlay.Hls ->
+                                                    target.url
+                                                is CobePlay.Embed ->
+                                                    target.url
+                                            }
+                                        } catch (e: Exception) {
+                                            ep.embedUrl.ifBlank { null }
+                                        }
+                                    item.sourceId == "hhkungfu" -> try {
+                                        app.hhKungfu.resolveEmbed(
+                                            ep.slug,
+                                            prefer4k = item.quality.contains("4K")
+                                        )
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                    else -> ep.streamUrl.ifBlank { ep.embedUrl.ifBlank { null } }
+                                }
+                            }
+                            _state.update { it.copy(serverStatuses = statuses) }
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 _state.update {
                     it.copy(loading = false, error = "Không tải được — kiểm tra mạng rồi thử lại.")
@@ -95,6 +148,52 @@ class PlayerViewModel(
 
     private suspend fun applyEpisode(item: TitleItem, episode: EpisodeItem) {
         when {
+            // Đợt 4: cobe episodes carry only a locator — the real link is
+            // resolved per episode. Derived/direct HLS feeds ExoPlayer
+            // like any KKPhim stream (the episode keeps its API embed URL,
+            // so "Xem bằng web" still works after an HLS failure); other
+            // links go to the embed surface.
+            CobeSource.isLocator(episode.slug) -> {
+                try {
+                    when (val target = app.cobe.resolvePlay(episode.slug)) {
+                        is CobePlay.Hls -> _state.update {
+                            it.copy(
+                                loading = false,
+                                episode = episode.copy(streamUrl = target.url),
+                                kind = PlaybackKind.STREAM,
+                                embedUrl = ""
+                            )
+                        }
+                        is CobePlay.Embed -> _state.update {
+                            it.copy(
+                                loading = false,
+                                episode = episode.copy(embedUrl = target.url),
+                                kind = PlaybackKind.EMBED,
+                                embedUrl = target.url
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (episode.embedUrl.isNotBlank()) {
+                        _state.update {
+                            it.copy(
+                                loading = false,
+                                episode = episode,
+                                kind = PlaybackKind.EMBED,
+                                embedUrl = episode.embedUrl
+                            )
+                        }
+                    } else {
+                        _state.update {
+                            it.copy(
+                                loading = false,
+                                episode = episode,
+                                error = "Không lấy được link phát từ server Cobe."
+                            )
+                        }
+                    }
+                }
+            }
             episode.streamUrl.isNotBlank() -> _state.update {
                 it.copy(loading = false, episode = episode, kind = PlaybackKind.STREAM, embedUrl = "")
             }

@@ -60,5 +60,7 @@ data class TitleDetail(
     val actors: List<String> = emptyList(),
     val directors: List<String> = emptyList(),
     val servers: List<ServerGroup> = emptyList(),   // video families
-    val chapters: List<ChapterItem> = emptyList()   // comic families
+    val chapters: List<ChapterItem> = emptyList(),  // comic families
+    val trailerUrl: String = "",                    // YouTube trailer (KKPhim trailer_url), "" when none
+    val genreLinks: List<Pair<String, String>> = emptyList() // (label, slug) — powers "Cùng thể loại"
 )

@@ -66,6 +66,7 @@ private fun matchesFilter(family: Family, filterIndex: Int): Boolean = when (fil
 fun MyPageScreen(
     onOpenTitle: (TitleItem) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenFirstNew: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -164,7 +165,15 @@ fun MyPageScreen(
             }
             items(state.following.size, key = { i -> state.following[i].item.id }) { i ->
                 val entry = state.following[i]
-                FollowingRow(entry = entry, onClick = { onOpenTitle(entry.item) })
+                FollowingRow(
+                    entry = entry,
+                    // C1: rows with unseen new units jump straight to the
+                    // first new one; the rest open the detail as before.
+                    onClick = {
+                        if (entry.state.newCount > 0) onOpenFirstNew(entry.item)
+                        else onOpenTitle(entry.item)
+                    }
+                )
             }
         }
 
@@ -272,7 +281,14 @@ private fun FollowingRow(entry: LibraryEntry, onClick: () -> Unit) {
             )
         }
         if (st.newCount > 0) {
-            PlusPill(st.newCount, item.family.unitWord())
+            // C1: name the new range ("Tập 76–78 mới") when baseline known.
+            if (st.seenCount > 0 && st.latestCount > st.seenCount) {
+                com.example.nflix.ui.components.NewUnitsPill(
+                    st.seenCount, st.latestCount, item.family.unitWord()
+                )
+            } else {
+                PlusPill(st.newCount, item.family.unitWord())
+            }
         }
     }
 }

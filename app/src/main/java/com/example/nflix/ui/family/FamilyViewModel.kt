@@ -40,10 +40,36 @@ data class FamilyUiState(
     val secondPosters: List<TitleItem> = emptyList(),
     val hasNew: Boolean = false,
     val newEntries: List<Pair<TitleItem, Int>> = emptyList(),
+    /** C1: titleId to (seenCount, latestCount) for the bell list's range pills. */
+    val newRanges: Map<String, Pair<Int, Int>> = emptyMap(),
     val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList(),
     val phimFilter: PhimFilter = PhimFilter(),
     /** Anime filter: kind/country are fixed (hoat-hinh + Nhật Bản); category/year vary. */
-    val animeFilter: PhimFilter = PhimFilter(kind = "hoat-hinh", country = "nhat-ban")
+    val animeFilter: PhimFilter = PhimFilter(kind = "hoat-hinh", country = "nhat-ban"),
+    /** Donghua genre menu (label to slug), parsed from the source's home page nav. */
+    val donghuaGenres: List<Pair<String, String>> = emptyList(),
+    /** Donghua genre filter: non-null = the tab is browsing that category. */
+    val donghuaGenre: Pair<String, String>? = null,
+    /** A4: "Sắp chiếu" shelf of the Phim tab (KKPhim phim-sap-chieu list). */
+    val comingSoon: List<TitleItem> = emptyList(),
+    /** A5: "Trọn bộ" (completed-only) filter of the Manhwa tab (NetTruyen status=2). */
+    val manhwaCompleted: Boolean = false,
+    /** A5: "Trọn bộ" filter of the Truyện tab (TruyenQQ /truyen-full, standalone list). */
+    val truyenCompleted: Boolean = false,
+    /** A5: Donghua browse mode for the /hoan-thanh listing (replaces the day layout). */
+    val donghuaCompleted: Boolean = false,
+    /** A8: "Mới tinh" shelf (brand-new series) of the Manhwa / Truyện tabs. */
+    val freshShelf: List<TitleItem> = emptyList(),
+    /** C3: Truyện source transparency — host actually serving + last load ms. */
+    val truyenHostLabel: String = "",
+    val truyenOnFallback: Boolean = false,
+    val truyenLastLoadMs: Long = -1L,
+    /** C3: the Truyện tab's main load FAILED (distinct from genuinely empty). */
+    val truyenError: Boolean = false,
+    /** C3: the Truyện "Mới tinh" shelf load failed. */
+    val truyenFreshError: Boolean = false,
+    /** C3: appending the next Truyện rows page failed (retry keeps hasMore). */
+    val truyenRowsError: Boolean = false
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -54,6 +80,18 @@ class FamilyViewModel(
 
     private val _state = MutableStateFlow(FamilyUiState())
     val state: StateFlow<FamilyUiState> = _state.asStateFlow()
+
+    /** B2: ids of everything the user tracks — powers the schedule filter. */
+    private val _trackedIds = MutableStateFlow<Set<String>>(emptySet())
+    val trackedIds: StateFlow<Set<String>> = _trackedIds.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            app.database.userStateDao().tracked().collect { states ->
+                _trackedIds.value = states.map { it.titleId }.toSet()
+            }
+        }
+    }
 
     companion object {
         /** Phim kinds — "Hoạt hình" removed per user order 2026-11-01 (Anime is its own tab now). */
@@ -121,12 +159,91 @@ class FamilyViewModel(
         if (family == Family.DONGHUA) {
             loadDonghuaTrending()
             loadDonghuaRows()
+            loadDonghuaGenres()
+        }
+        if (family == Family.PHIM) {
+            loadComingSoon()
+        }
+        if (family == Family.MANHWA || family == Family.TRUYEN) {
+            loadFreshShelf()
         }
         collectFollowingNew()
     }
 
+    /** A8: "Mới tinh" shelf — series that just launched, not new chapters. */
+    private fun loadFreshShelf() {
+        viewModelScope.launch {
+            try {
+                val list = when (family) {
+                    Family.MANHWA -> app.netTruyen.newest(1)
+                    Family.TRUYEN -> app.truyenQq.newest(1)
+                    else -> emptyList()
+                }
+                app.database.titleDao().upsertAll(list.map { it.toEntity() })
+                _state.update {
+                    if (family == Family.TRUYEN) {
+                        it.copy(freshShelf = list, truyenFreshError = false)
+                            .withTruyenStatus()
+                    } else {
+                        it.copy(freshShelf = list)
+                    }
+                }
+            } catch (e: Exception) {
+                // C3: a failed Truyện shelf is an ERROR, not an empty shelf.
+                if (family == Family.TRUYEN) {
+                    _state.update { it.copy(truyenFreshError = true).withTruyenStatus() }
+                }
+            }
+        }
+    }
+
+    /** C3: snapshot the Truyện source's live host state into the UI state. */
+    private fun FamilyUiState.withTruyenStatus(): FamilyUiState = copy(
+        truyenHostLabel = app.truyenQq.statusHostLabel(),
+        truyenOnFallback = app.truyenQq.statusOnFallback(),
+        truyenLastLoadMs = app.truyenQq.statusLastLoadMs()
+    )
+
+    /** C3: retry the Truyện tab's failed loads (main list + "Mới tinh" shelf). */
+    fun retryTruyen() {
+        if (family != Family.TRUYEN) return
+        _state.update { it.copy(truyenError = false, truyenFreshError = false) }
+        selectContext(_state.value.contextIndex)
+        loadFreshShelf()
+    }
+
+    /** C3: retry appending the next Truyện rows page after a load-more error. */
+    fun retryTruyenRows() {
+        if (family != Family.TRUYEN) return
+        _state.update { it.copy(truyenRowsError = false) }
+        loadMoreRows()
+    }
+
+    /** A4: the "Sắp chiếu" shelf — page 1 of KKPhim's coming-soon list is enough for a shelf. */
+    private fun loadComingSoon() {
+        viewModelScope.launch {
+            try {
+                val list = app.kkPhim.comingSoon(1)
+                app.database.titleDao().upsertAll(list.map { it.toEntity() })
+                _state.update { it.copy(comingSoon = list) }
+            } catch (e: Exception) { /* shelf stays hidden */ }
+        }
+    }
+
     /** Followed titles with unseen new episodes/chapters — drives the header bell. */
     private fun collectFollowingNew() {
+        // C1: the (seen, latest) ranges ride the same tracked() stream, in a
+        // sibling collector (the entries collector below never returns).
+        viewModelScope.launch {
+            app.database.userStateDao().tracked().collect { states ->
+                _state.update {
+                    it.copy(
+                        newRanges = states.filter { s -> s.newCount > 0 }
+                            .associate { s -> s.titleId to (s.seenCount to s.latestCount) }
+                    )
+                }
+            }
+        }
         viewModelScope.launch {
             app.database.userStateDao().tracked().flatMapLatest { states ->
                 val withNew = states.filter { it.newCount > 0 }
@@ -163,7 +280,19 @@ class FamilyViewModel(
     }
 
     fun selectContext(index: Int) {
-        _state.update { it.copy(contextIndex = index, loading = true) }
+        // Picking a Donghua day chip exits genre/completed browse mode; the
+        // rows then belong to loadDonghuaRows again.
+        val exitedBrowse = family == Family.DONGHUA &&
+            (_state.value.donghuaGenre != null || _state.value.donghuaCompleted)
+        _state.update {
+            it.copy(
+                contextIndex = index,
+                loading = true,
+                donghuaGenre = if (family == Family.DONGHUA) null else it.donghuaGenre,
+                donghuaCompleted = if (family == Family.DONGHUA) false else it.donghuaCompleted
+            )
+        }
+        if (exitedBrowse) loadDonghuaRows()
         viewModelScope.launch {
             try {
                 val (posters, rows) = when (family) {
@@ -184,19 +313,28 @@ class FamilyViewModel(
                         list to _state.value.rows
                     }
                     Family.MANHWA -> {
-                        val slug = MANHWA_GENRES[index].second
-                        if (index == 0) app.netTruyen.hot() to app.netTruyen.latest()
-                        else {
-                            val list = app.netTruyen.byGenre(slug)
+                        if (_state.value.manhwaCompleted) {
+                            val list = fetchManhwa(index, completed = true, page = 1)
+                            list to list
+                        } else if (index == 0) {
+                            app.netTruyen.hot() to app.netTruyen.latest()
+                        } else {
+                            val list = app.netTruyen.byGenre(MANHWA_GENRES[index].second)
                             list to list
                         }
                     }
                     Family.TRUYEN -> {
-                        val slug = TRUYEN_GENRES[index].second
-                        if (slug.isEmpty()) app.truyenQq.home()
-                        else {
-                            val list = app.truyenQq.byGenre(slug)
+                        if (_state.value.truyenCompleted) {
+                            // /truyen-full is one standalone list for the tab.
+                            val list = app.truyenQq.completed(1)
                             list to list
+                        } else {
+                            val slug = TRUYEN_GENRES[index].second
+                            if (slug.isEmpty()) app.truyenQq.home()
+                            else {
+                                val list = app.truyenQq.byGenre(slug)
+                                list to list
+                            }
                         }
                     }
                 }
@@ -206,6 +344,18 @@ class FamilyViewModel(
                     // a day-chip switch must not clobber them with a stale copy.
                     if (family == Family.DONGHUA) {
                         it.copy(loading = false, posters = posters)
+                    } else if (family == Family.TRUYEN) {
+                        // C3: a loaded Truyện tab clears its error state and
+                        // publishes which host served it + how long it took.
+                        it.copy(
+                            loading = false,
+                            posters = posters,
+                            rows = rows,
+                            rowsPage = 1,
+                            rowsHasMore = rowsHasMoreFor(index),
+                            truyenError = false,
+                            truyenRowsError = false
+                        ).withTruyenStatus()
                     } else {
                         it.copy(
                             loading = false,
@@ -217,15 +367,35 @@ class FamilyViewModel(
                     }
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false) }
+                _state.update {
+                    // C3: for Truyện an exception means "load failed", never
+                    // silently an empty tab (K4).
+                    if (family == Family.TRUYEN) {
+                        it.copy(loading = false, truyenError = true).withTruyenStatus()
+                    } else {
+                        it.copy(loading = false)
+                    }
+                }
             }
         }
     }
 
     /** Whether the current rows source has further pages to append. */
     private fun rowsHasMoreFor(contextIndex: Int): Boolean = when (family) {
-        Family.TRUYEN -> TRUYEN_GENRES.getOrNull(contextIndex)?.second?.isNotEmpty() == true
+        Family.TRUYEN -> _state.value.truyenCompleted ||
+            TRUYEN_GENRES.getOrNull(contextIndex)?.second?.isNotEmpty() == true
         else -> true
+    }
+
+    /** One Manhwa page with the "Trọn bộ" flag applied (status=2 overall or per genre). */
+    private suspend fun fetchManhwa(idx: Int, completed: Boolean, page: Int): List<TitleItem> {
+        val slug = MANHWA_GENRES[idx].second
+        return when {
+            completed && idx == 0 -> app.netTruyen.completed(page)
+            completed -> app.netTruyen.completedByGenre(slug, page)
+            idx == 0 -> app.netTruyen.hot(page)
+            else -> app.netTruyen.byGenre(slug, page)
+        }
     }
 
     /** One page of the "Mới cập nhật" rows for the current context/filter. */
@@ -238,15 +408,25 @@ class FamilyViewModel(
                 else fetchPhim(f, page)
             }
             Family.ANIME -> fetchAnime(s.animeFilter, page)
-            Family.DONGHUA -> app.hhKungfu.latest(page)
+            Family.DONGHUA -> {
+                val genre = s.donghuaGenre
+                if (genre != null) app.hhKungfu.byCategory(genre.second, page)
+                else if (s.donghuaCompleted) app.hhKungfu.completed(page)
+                else app.hhKungfu.latest(page)
+            }
             Family.MANHWA -> {
                 val idx = s.contextIndex
-                if (idx == 0) app.netTruyen.latest(page)
+                if (s.manhwaCompleted) fetchManhwa(idx, completed = true, page = page)
+                else if (idx == 0) app.netTruyen.latest(page)
                 else app.netTruyen.byGenre(MANHWA_GENRES[idx].second, page)
             }
             Family.TRUYEN -> {
-                val slug = TRUYEN_GENRES.getOrNull(s.contextIndex)?.second.orEmpty()
-                if (slug.isEmpty()) emptyList() else app.truyenQq.byGenre(slug, page)
+                if (s.truyenCompleted) {
+                    app.truyenQq.completed(page)
+                } else {
+                    val slug = TRUYEN_GENRES.getOrNull(s.contextIndex)?.second.orEmpty()
+                    if (slug.isEmpty()) emptyList() else app.truyenQq.byGenre(slug, page)
+                }
             }
         }
     }
@@ -258,9 +438,11 @@ class FamilyViewModel(
         _state.update { it.copy(loadingMore = true) }
         viewModelScope.launch {
             val nextPage = s.rowsPage + 1
+            var failed = false
             val more = try {
                 fetchRows(nextPage)
             } catch (e: Exception) {
+                failed = true
                 emptyList()
             }
             if (more.isNotEmpty()) {
@@ -271,7 +453,15 @@ class FamilyViewModel(
                     loadingMore = false,
                     rows = (it.rows + more).distinctBy { d -> d.id },
                     rowsPage = if (more.isNotEmpty()) nextPage else it.rowsPage,
-                    rowsHasMore = more.isNotEmpty()
+                    // C3: a failed page fetch is NOT the end of the list —
+                    // for Truyện keep hasMore and raise the rows error state
+                    // instead of swallowing the failure as "no more rows".
+                    rowsHasMore = if (failed && family == Family.TRUYEN) {
+                        it.rowsHasMore
+                    } else {
+                        more.isNotEmpty()
+                    },
+                    truyenRowsError = if (family == Family.TRUYEN) failed else it.truyenRowsError
                 )
             }
         }
@@ -351,8 +541,115 @@ class FamilyViewModel(
             try {
                 val rows = app.hhKungfu.latest(1)
                 app.database.titleDao().upsertAll(rows.map { it.toEntity() })
-                _state.update { it.copy(rows = rows, rowsPage = 1, rowsHasMore = true) }
+                _state.update {
+                    // Browse modes (genre / completed) own the rows — do not clobber them.
+                    if (it.donghuaGenre == null && !it.donghuaCompleted) {
+                        it.copy(rows = rows, rowsPage = 1, rowsHasMore = true)
+                    } else {
+                        it
+                    }
+                }
             } catch (e: Exception) { /* shelf stays hidden */ }
+        }
+    }
+
+    /** Donghua genre menu for the "Thể loại" sheet, from the source's home page nav. */
+    private fun loadDonghuaGenres() {
+        viewModelScope.launch {
+            try {
+                val genres = app.hhKungfu.genreLinks()
+                if (genres.isNotEmpty()) {
+                    _state.update { it.copy(donghuaGenres = genres) }
+                }
+            } catch (e: Exception) { /* sheet keeps only "Tất cả" */ }
+        }
+    }
+
+    /**
+     * Donghua "Thể loại" sheet result: a genre switches the tab to browsing
+     * that category (posters + paged rows); null restores the default layout
+     * (day-chip schedule shelf + latest rows).
+     */
+    fun applyDonghuaGenre(genre: Pair<String, String>?) {
+        if (family != Family.DONGHUA) return
+        if (genre == null) {
+            _state.update { it.copy(donghuaGenre = null) }
+            selectContext(_state.value.contextIndex)
+            loadDonghuaRows()
+            return
+        }
+        _state.update {
+            it.copy(donghuaGenre = genre, donghuaCompleted = false, loading = true, rowsPage = 1)
+        }
+        viewModelScope.launch {
+            try {
+                val list = app.hhKungfu.byCategory(genre.second, 1)
+                app.database.titleDao().upsertAll(list.map { it.toEntity() })
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        posters = list,
+                        rows = list,
+                        rowsPage = 1,
+                        rowsHasMore = list.isNotEmpty()
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false) }
+            }
+        }
+    }
+
+    /**
+     * A5 "Trọn bộ" toggle from the filter sheets. Manhwa/Truyện: a flag over
+     * the current genre context (NetTruyen status=2 per genre; TruyenQQ's
+     * /truyen-full is one standalone list covering the whole tab). Donghua:
+     * a browse mode that replaces the day-chip layout with /hoan-thanh.
+     */
+    fun setCompletedFilter(on: Boolean) {
+        when (family) {
+            Family.MANHWA -> {
+                if (_state.value.manhwaCompleted == on) return
+                _state.update { it.copy(manhwaCompleted = on) }
+                selectContext(_state.value.contextIndex)
+            }
+            Family.TRUYEN -> {
+                if (_state.value.truyenCompleted == on) return
+                _state.update { it.copy(truyenCompleted = on) }
+                selectContext(_state.value.contextIndex)
+            }
+            Family.DONGHUA -> setDonghuaCompleted(on)
+            else -> Unit
+        }
+    }
+
+    private fun setDonghuaCompleted(on: Boolean) {
+        if (_state.value.donghuaCompleted == on) return
+        if (!on) {
+            _state.update { it.copy(donghuaCompleted = false) }
+            selectContext(_state.value.contextIndex)
+            loadDonghuaRows()
+            return
+        }
+        _state.update {
+            it.copy(donghuaCompleted = true, donghuaGenre = null, loading = true, rowsPage = 1)
+        }
+        viewModelScope.launch {
+            try {
+                val list = app.hhKungfu.completed(1)
+                app.database.titleDao().upsertAll(list.map { it.toEntity() })
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        posters = list,
+                        rows = list,
+                        rowsPage = 1,
+                        rowsHasMore = list.isNotEmpty()
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(loading = false) }
+            }
         }
     }
 

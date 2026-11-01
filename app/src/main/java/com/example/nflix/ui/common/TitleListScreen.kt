@@ -38,6 +38,8 @@ fun TitleListScreen(
     modifier: Modifier = Modifier,
     newCountOf: (TitleItem) -> Int = { 0 },
     unitOf: (TitleItem) -> String = { "tập" },
+    newRangeOf: (TitleItem) -> Pair<Int, Int>? = { null },
+    onOpenFirstNew: ((TitleItem) -> Unit)? = null,
     onLoadMore: (() -> Unit)? = null
 ) {
     BackHandler(onBack = onBack)
@@ -74,11 +76,22 @@ fun TitleListScreen(
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(items, key = { it.id }) { item ->
+                    val range = newRangeOf(item)
                     UpdatedRow(
                         item = item,
-                        onClick = { onOpenTitle(item) },
+                        // C1: a row with unseen new units goes straight to
+                        // the first new one when the host wired the jump.
+                        onClick = {
+                            if (newCountOf(item) > 0 && onOpenFirstNew != null) {
+                                onOpenFirstNew(item)
+                            } else {
+                                onOpenTitle(item)
+                            }
+                        },
                         newCount = newCountOf(item),
-                        unit = unitOf(item)
+                        unit = unitOf(item),
+                        newSeen = range?.first ?: 0,
+                        newLatest = range?.second ?: 0
                     )
                 }
                 if (onLoadMore != null) {

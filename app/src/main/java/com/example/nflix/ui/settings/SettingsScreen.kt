@@ -39,10 +39,15 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import coil.imageLoader
 import com.example.nflix.NflixApp
 import com.example.nflix.R
 import com.example.nflix.data.AppSettings
+import com.example.nflix.data.BackupStore
+import com.example.nflix.data.ErrorReport
+import com.example.nflix.data.ReportStore
 import com.example.nflix.data.SettingsStore
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixRed
@@ -81,7 +86,9 @@ private val READER_MODE_OPTIONS = listOf(
 val SHELF_DEFS = listOf(
     "continue" to "Xem tiếp",
     "new" to "Có tập mới",
+    "today" to "Hôm nay có gì",
     "suggested" to "Gợi ý cho bạn",
+    "foryou" to "Dành cho bạn",
     "latest" to "Mới nhất"
 )
 
@@ -121,18 +128,73 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     val settings by app.settings.flow.collectAsState(initial = AppSettings())
     val scope = rememberCoroutineScope()
     var showShelves by remember { mutableStateOf(false) }
+    var showReports by remember { mutableStateOf(false) }
     var optionSheet by remember { mutableStateOf<String?>(null) }
     var cacheBytes by remember { mutableStateOf(-1L) }
     var confirmClearCache by remember { mutableStateOf(false) }
+    var backupNote by remember { mutableStateOf("") }
+    var pendingExport by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         cacheBytes = withContext(Dispatchers.IO) { dirSize(context.cacheDir) }
+    }
+
+    // B3: export writes one JSON file via the system document picker
+    // (Storage Access Framework — no storage permission needed).
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val json = pendingExport
+        pendingExport = null
+        if (uri != null && json != null) {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use {
+                            it.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: throw IllegalStateException("no stream")
+                        true
+                    }.getOrDefault(false)
+                }
+                backupNote = if (ok) "Đã xuất file sao lưu tủ phim."
+                else "Không ghi được file — hãy thử lại."
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                backupNote = try {
+                    val text = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use {
+                            it.readBytes().toString(Charsets.UTF_8)
+                        } ?: throw IllegalArgumentException("Không đọc được file đã chọn.")
+                    }
+                    val count = BackupStore.importJson(app, text)
+                    "Đã nhập $count mục vào tủ phim."
+                } catch (e: IllegalArgumentException) {
+                    e.message ?: "File không hợp lệ."
+                } catch (e: Exception) {
+                    "Nhập dữ liệu thất bại — hãy thử lại."
+                }
+            }
+        }
     }
 
     if (showShelves) {
         ShelvesScreen(
             settings = settings,
             onBack = { showShelves = false },
+            modifier = modifier
+        )
+        return
+    }
+
+    if (showReports) {
+        ReportsScreen(
+            onBack = { showReports = false },
             modifier = modifier
         )
         return
@@ -289,6 +351,46 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
         }
 
         item { GroupHeader("DỮ LIỆU") }
+        item {
+            ValueRow(
+                label = "Xuất tủ phim",
+                sub = "Yêu thích, theo dõi, tiến độ — gói vào 1 file JSON",
+                value = ""
+            ) {
+                scope.launch {
+                    backupNote = "Đang tạo file…"
+                    pendingExport = BackupStore.exportJson(app)
+                    backupNote = ""
+                    exportLauncher.launch("nflix-tu-phim.json")
+                }
+            }
+        }
+        item {
+            ValueRow(
+                label = "Nhập tủ phim",
+                sub = "Khôi phục từ file đã xuất (ghi đè theo từng mục)",
+                value = ""
+            ) {
+                importLauncher.launch(arrayOf("application/json", "text/plain"))
+            }
+        }
+        if (backupNote.isNotBlank()) {
+            item {
+                Text(
+                    backupNote,
+                    color = NflixViolet,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+        }
+        item {
+            ValueRow(
+                label = "Báo lỗi đã ghi",
+                sub = "Lỗi bạn đã báo trong trình phát / trình đọc",
+                value = ""
+            ) { showReports = true }
+        }
         item {
             ValueRow(
                 label = "Xoá bộ nhớ đệm",
@@ -471,6 +573,139 @@ private fun OptionSheet(
                 }
             }
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+/**
+ * 0.4: the reports the user filed from the Player / Reader, stored locally
+ * by ReportStore. View, share out as text, or clear — nothing is sent
+ * anywhere automatically.
+ */
+@Composable
+private fun ReportsScreen(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var reports by remember { mutableStateOf<List<ErrorReport>>(emptyList()) }
+    var loaded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        reports = withContext(Dispatchers.IO) { ReportStore.load(context) }
+        loaded = true
+    }
+
+    Column(modifier = modifier.fillMaxSize().background(NflixBackground)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.size(36.dp)
+                    .background(Color(0xFF1B1B24), CircleShape)
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_back),
+                    contentDescription = "Quay lại",
+                    tint = Color.White,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+            Text(
+                "Báo lỗi đã ghi",
+                color = Color.White,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 10.dp)
+            )
+        }
+        if (loaded && reports.isEmpty()) {
+            Text(
+                "Chưa có báo lỗi nào. Khi trình phát hoặc trình đọc gặp lỗi, " +
+                    "bấm \"Báo lỗi\" ở màn hình lỗi để ghi lại tại đây.",
+                color = NflixTextMuted,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
+        if (reports.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Chia sẻ danh sách",
+                    color = NflixViolet,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable {
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    android.content.Intent.EXTRA_TEXT,
+                                    ReportStore.formatText(reports)
+                                )
+                            }
+                            context.startActivity(
+                                android.content.Intent.createChooser(send, "Chia sẻ báo lỗi")
+                            )
+                        }
+                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "Xoá hết",
+                    color = NflixRed,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { ReportStore.clear(context) }
+                                reports = emptyList()
+                            }
+                        }
+                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                )
+            }
+        }
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(reports.size) { i ->
+                val r = reports[i]
+                val timeText = remember(r.timeEpochSec) {
+                    java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.US)
+                        .format(java.util.Date(r.timeEpochSec * 1000))
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 7.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(NflixSurface)
+                        .padding(horizontal = 14.dp, vertical = 11.dp)
+                ) {
+                    Text(
+                        r.titleName.ifBlank { r.titleId },
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                    val meta = listOf(timeText, r.unitLabel, r.server)
+                        .filter { it.isNotBlank() }.joinToString(" · ")
+                    if (meta.isNotBlank()) {
+                        Text(meta, color = NflixTextMuted, fontSize = 12.sp)
+                    }
+                    Text(r.message, color = NflixTextMuted, fontSize = 12.sp)
+                }
+            }
+            item { Spacer(Modifier.height(24.dp)) }
         }
     }
 }

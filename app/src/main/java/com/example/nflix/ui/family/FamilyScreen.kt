@@ -67,6 +67,9 @@ import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
 
+/** Sentinel chip value in the Donghua sheet: "Trọn bộ" browse mode (A5). */
+private const val DONGHUA_COMPLETED_SLUG = "__tron_bo"
+
 private val FAMILY_CHIP_LABELS = listOf("Tất cả", "Phim", "Anime", "Donghua", "Manhwa", "Truyện")
 private val FAMILY_CHIP_VALUES = listOf(null, Family.PHIM, Family.ANIME, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
 
@@ -77,6 +80,7 @@ fun FamilyScreen(
     onFamilyChange: (Family?) -> Unit,
     onOpenTitle: (TitleItem) -> Unit,
     onGoSearch: () -> Unit,
+    onOpenFirstNew: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -91,13 +95,17 @@ fun FamilyScreen(
         Family.PHIM -> "Đang thịnh hành"
         Family.ANIME -> "Đang thịnh hành"
         Family.DONGHUA ->
-            if (state.contextIndex == 0) "Ra tập mới hôm nay"
+            if (state.donghuaCompleted) "Trọn bộ"
+            else if (state.donghuaGenre != null) state.donghuaGenre.first
+            else if (state.contextIndex == 0) "Ra tập mới hôm nay"
             else "Ra tập mới ${FamilyViewModel.DAY_LABELS[state.contextIndex]}"
         Family.MANHWA ->
-            if (state.contextIndex == 0) "Đang hot"
+            if (state.manhwaCompleted) "Trọn bộ"
+            else if (state.contextIndex == 0) "Đang hot"
             else FamilyViewModel.MANHWA_GENRES[state.contextIndex].first
         Family.TRUYEN ->
-            if (state.contextIndex == 0) "Đang hot"
+            if (state.truyenCompleted) "Trọn bộ"
+            else if (state.contextIndex == 0) "Đang hot"
             else FamilyViewModel.TRUYEN_GENRES[state.contextIndex].first
     }
 
@@ -112,10 +120,30 @@ fun FamilyScreen(
             )
             return
         }
+        "coming" -> {
+            TitleGridScreen(
+                title = "Sắp chiếu",
+                items = state.comingSoon,
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
         "second" -> {
             TitleGridScreen(
                 title = "Đang thịnh hành",
                 items = state.secondPosters,
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
+        "fresh" -> {
+            TitleGridScreen(
+                title = "Mới tinh",
+                items = state.freshShelf,
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
                 modifier = modifier
@@ -143,13 +171,19 @@ fun FamilyScreen(
                 newCountOf = { item ->
                     state.newEntries.firstOrNull { it.first.id == item.id }?.second ?: 0
                 },
-                unitOf = { it.family.unitWord() }
+                unitOf = { it.family.unitWord() },
+                newRangeOf = { item ->
+                    state.newRanges[item.id]?.takeIf { it.first > 0 }
+                },
+                onOpenFirstNew = onOpenFirstNew
             )
             return
         }
         "schedule" -> {
+            val trackedIds by viewModel.trackedIds.collectAsState()
             ScheduleWeekScreen(
                 groups = state.scheduleWeek,
+                trackedIds = trackedIds,
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
                 modifier = modifier
@@ -207,11 +241,21 @@ fun FamilyScreen(
             // its day chips; Phim/Anime/Manhwa/Truyện get ONE "Thể loại" button
             // that opens the filter sheet (Anime filter added per user report).
             when (family) {
-                Family.DONGHUA -> ContextChips(
-                    labels = contextLabels,
-                    selectedIndex = state.contextIndex,
-                    onSelect = { viewModel.selectContext(it) }
-                )
+                Family.DONGHUA -> Column {
+                    ContextChips(
+                        labels = contextLabels,
+                        selectedIndex = state.contextIndex,
+                        onSelect = { viewModel.selectContext(it) }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    // A3: Donghua gets the same "Thể loại" button as the
+                    // other families, under its day chips.
+                    GenreFilterButton(
+                        summary = filterSummary(family, state),
+                        active = filterActive(family, state),
+                        onClick = { showFilter = true }
+                    )
+                }
                 Family.PHIM, Family.ANIME, Family.MANHWA, Family.TRUYEN -> GenreFilterButton(
                     summary = filterSummary(family, state),
                     active = filterActive(family, state),
@@ -220,10 +264,89 @@ fun FamilyScreen(
             }
         }
 
+        // C3 (K4): Truyện host transparency — a small line under the header,
+        // shown only when there is something worth telling: the fallback
+        // host is serving, the last load was slow (>8s), or a load failed.
+        val showTruyenStatus = family == Family.TRUYEN && state.truyenHostLabel.isNotBlank() &&
+            (state.truyenOnFallback || state.truyenLastLoadMs > 8000 ||
+                state.truyenError || state.truyenFreshError)
+        if (showTruyenStatus) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        buildString {
+                            append("Nguồn: ")
+                            append(state.truyenHostLabel)
+                            if (state.truyenLastLoadMs >= 0) {
+                                append(" · tải " + fmtLoadMs(state.truyenLastLoadMs))
+                            }
+                            if (state.truyenOnFallback) append(" · đang dùng host dự phòng")
+                            if (state.truyenError) append(" · lần tải gần nhất lỗi")
+                            if (state.truyenFreshError) append(" · kệ Mới tinh lỗi")
+                        },
+                        color = NflixTextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (state.truyenError || state.truyenFreshError) {
+                        Text(
+                            "Thử lại",
+                            color = NflixViolet,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable { viewModel.retryTruyen() }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+
         if (state.loading && state.posters.isEmpty()) {
             item {
                 Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = NflixViolet)
+                }
+            }
+        }
+
+        // C3: the Truyện main load FAILED and nothing is on screen — an
+        // explicit error + retry, never a silently empty tab.
+        if (family == Family.TRUYEN && state.truyenError && !state.loading &&
+            state.posters.isEmpty() && state.rows.isEmpty()
+        ) {
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 32.dp, vertical = 36.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "Không tải được nguồn Truyện" +
+                            if (state.truyenHostLabel.isNotBlank()) {
+                                " (${state.truyenHostLabel})"
+                            } else {
+                                ""
+                            },
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Cả hai host đều không phản hồi — kiểm tra mạng rồi thử lại.",
+                        color = NflixTextMuted,
+                        fontSize = 12.sp
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = { viewModel.retryTruyen() },
+                        colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
+                        shape = RoundedCornerShape(50)
+                    ) { Text("Thử lại", color = Color.White) }
                 }
             }
         }
@@ -236,15 +359,36 @@ fun FamilyScreen(
                     items = state.posters,
                     onItemClick = onOpenTitle,
                     modifier = Modifier.padding(top = 6.dp),
-                    actionLabel = if (family == Family.DONGHUA) "Lịch phát sóng" else "Xem tất cả",
+                    actionLabel = if (family == Family.DONGHUA && state.donghuaGenre == null &&
+                        !state.donghuaCompleted
+                    ) {
+                        "Lịch phát sóng"
+                    } else {
+                        "Xem tất cả"
+                    },
                     onAction = {
-                        if (family == Family.DONGHUA) {
+                        if (family == Family.DONGHUA && state.donghuaGenre == null &&
+                            !state.donghuaCompleted
+                        ) {
                             viewModel.loadScheduleWeek()
                             showAll = "schedule"
                         } else {
                             showAll = "posters"
                         }
                     }
+                )
+            }
+        }
+
+        // A4 — Phim "Sắp chiếu" shelf (trailer-only titles, followable)
+        if (family == Family.PHIM && state.comingSoon.isNotEmpty()) {
+            item {
+                PosterShelf(
+                    title = "Sắp chiếu",
+                    items = state.comingSoon,
+                    onItemClick = onOpenTitle,
+                    actionLabel = "Xem tất cả",
+                    onAction = { showAll = "coming" }
                 )
             }
         }
@@ -262,6 +406,25 @@ fun FamilyScreen(
             }
         }
 
+        // A8 — "Mới tinh" shelf (brand-new series) for Manhwa / Truyện,
+        // shown in the tabs' default context only.
+        val showFresh = state.freshShelf.isNotEmpty() && when (family) {
+            Family.MANHWA -> state.contextIndex == 0 && !state.manhwaCompleted
+            Family.TRUYEN -> state.contextIndex == 0 && !state.truyenCompleted
+            else -> false
+        }
+        if (showFresh) {
+            item {
+                PosterShelf(
+                    title = "Mới tinh",
+                    items = state.freshShelf,
+                    onItemClick = onOpenTitle,
+                    actionLabel = "Xem tất cả",
+                    onAction = { showAll = "fresh" }
+                )
+            }
+        }
+
         // Rows shelf — "Mới cập nhật" (all families, Donghua included)
         if (state.rows.isNotEmpty()) {
             item {
@@ -273,6 +436,31 @@ fun FamilyScreen(
             }
             items(state.rows.take(8), key = { it.id }) { item ->
                 UpdatedRow(item = item, onClick = { onOpenTitle(item) })
+            }
+        }
+
+        // C3: appending the next Truyện rows page failed — per-shelf retry.
+        if (family == Family.TRUYEN && state.truyenRowsError) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                        .clickable { viewModel.retryTruyenRows() },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Không tải thêm được danh sách",
+                        color = NflixTextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "Thử lại",
+                        color = NflixViolet,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
 
@@ -300,15 +488,38 @@ fun FamilyScreen(
             Family.MANHWA, Family.TRUYEN -> GenrePickSheet(
                 labels = contextLabels,
                 selectedIndex = state.contextIndex,
+                completed = if (family == Family.MANHWA) state.manhwaCompleted else state.truyenCompleted,
                 onPick = { index ->
                     showFilter = false
                     viewModel.selectContext(index)
+                },
+                onToggleCompleted = { on ->
+                    showFilter = false
+                    viewModel.setCompletedFilter(on)
+                },
+                onDismiss = { showFilter = false }
+            )
+            Family.DONGHUA -> DonghuaGenreSheet(
+                genres = state.donghuaGenres,
+                current = state.donghuaGenre,
+                completed = state.donghuaCompleted,
+                onApply = { genre, completed ->
+                    showFilter = false
+                    if (completed) viewModel.setCompletedFilter(true)
+                    else viewModel.applyDonghuaGenre(genre)
                 },
                 onDismiss = { showFilter = false }
             )
             else -> Unit
         }
     }
+}
+
+/** C3: human form of a page-load duration ("850 ms" / "1,2 s"). */
+private fun fmtLoadMs(ms: Long): String = when {
+    ms < 0 -> ""
+    ms < 1000 -> "$ms ms"
+    else -> "%.1f s".format(ms / 1000f).replace('.', ',')
 }
 
 /** Short text shown after "Thể loại" on the button when a filter is active. */
@@ -330,12 +541,22 @@ private fun filterSummary(family: Family, state: FamilyUiState): String = when (
         if (f.year > 0) parts += f.year.toString()
         parts.joinToString(" · ")
     }
-    Family.MANHWA ->
+    Family.MANHWA -> {
+        val parts = mutableListOf<String>()
         FamilyViewModel.MANHWA_GENRES.getOrNull(state.contextIndex)?.first
-            ?.takeIf { state.contextIndex != 0 } ?: ""
-    Family.TRUYEN ->
+            ?.takeIf { state.contextIndex != 0 }?.let { parts += it }
+        if (state.manhwaCompleted) parts += "Trọn bộ"
+        parts.joinToString(" · ")
+    }
+    Family.TRUYEN -> {
+        val parts = mutableListOf<String>()
         FamilyViewModel.TRUYEN_GENRES.getOrNull(state.contextIndex)?.first
-            ?.takeIf { state.contextIndex != 0 } ?: ""
+            ?.takeIf { state.contextIndex != 0 }?.let { parts += it }
+        if (state.truyenCompleted) parts += "Trọn bộ"
+        parts.joinToString(" · ")
+    }
+    Family.DONGHUA ->
+        if (state.donghuaCompleted) "Trọn bộ" else state.donghuaGenre?.first ?: ""
     else -> ""
 }
 
@@ -509,6 +730,58 @@ private fun AnimeFilterSheet(
     }
 }
 
+/**
+ * Donghua genre sheet (A3 + A5): Thể loại from the source's own menu, plus
+ * a "Trọn bộ" chip that switches the tab to the /hoan-thanh listing.
+ * onApply receives (genre, completed) — exactly one mode at a time.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun DonghuaGenreSheet(
+    genres: List<Pair<String, String>>,
+    current: Pair<String, String>?,
+    completed: Boolean,
+    onApply: (Pair<String, String>?, Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var slug by remember {
+        mutableStateOf(if (completed) DONGHUA_COMPLETED_SLUG else current?.second ?: "")
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Thể loại", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            FilterSection("Thể loại") {
+                FilterChipRow(
+                    options = listOf("" to "Tất cả", DONGHUA_COMPLETED_SLUG to "Trọn bộ") +
+                        genres.map { it.second to it.first },
+                    selected = slug,
+                    onSelect = { slug = it }
+                )
+            }
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                Button(
+                    onClick = { slug = "" },
+                    colors = ButtonDefaults.buttonColors(containerColor = NflixBackground),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.weight(1f)
+                ) { Text("Đặt lại", color = Color.White) }
+                Spacer(Modifier.width(10.dp))
+                Button(
+                    onClick = {
+                        if (slug == DONGHUA_COMPLETED_SLUG) onApply(null, true)
+                        else onApply(genres.firstOrNull { it.second == slug }, false)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NflixViolet),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.weight(2f)
+                ) { Text("Lọc", color = Color.White, fontWeight = FontWeight.SemiBold) }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FilterSection(title: String, content: @Composable () -> Unit) {
@@ -555,12 +828,37 @@ private fun FilterChipRow(
     }
 }
 
+@Composable
+private fun PickChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) Color(0xFF2A2450) else NflixBackground)
+            .then(
+                if (selected) Modifier.border(1.dp, NflixViolet, RoundedCornerShape(50))
+                else Modifier
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) {
+        Text(
+            label,
+            color = if (selected) NflixViolet else Color.White,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun GenrePickSheet(
     labels: List<String>,
     selectedIndex: Int,
+    completed: Boolean,
     onPick: (Int) -> Unit,
+    onToggleCompleted: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
@@ -569,26 +867,15 @@ private fun GenrePickSheet(
             Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
                 labels.forEachIndexed { index, label ->
-                    val isSel = index == selectedIndex
-                    Box(
-                        modifier = Modifier
-                            .padding(bottom = 8.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(if (isSel) Color(0xFF2A2450) else NflixBackground)
-                            .then(
-                                if (isSel) Modifier.border(1.dp, NflixViolet, RoundedCornerShape(50))
-                                else Modifier
-                            )
-                            .clickable { onPick(index) }
-                            .padding(horizontal = 12.dp, vertical = 7.dp)
-                    ) {
-                        Text(
-                            label,
-                            color = if (isSel) NflixViolet else Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal
-                        )
-                    }
+                    PickChip(label, selected = index == selectedIndex) { onPick(index) }
+                }
+            }
+            // A5: completion filter — "Trọn bộ" narrows the current genre
+            // (NetTruyen status=2) or switches Truyện to its /truyen-full list.
+            FilterSection("Trạng thái") {
+                FlowRow(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                    PickChip("Tất cả", selected = !completed) { onToggleCompleted(false) }
+                    PickChip("Trọn bộ", selected = completed) { onToggleCompleted(true) }
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -600,11 +887,21 @@ private fun GenrePickSheet(
 @Composable
 private fun ScheduleWeekScreen(
     groups: List<Pair<String, List<TitleItem>>>,
+    trackedIds: Set<String> = emptySet(),
     onBack: () -> Unit,
     onOpenTitle: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
+    // B2: "Chỉ phim tôi theo dõi" — narrow the week to tracked titles.
+    var onlyMine by remember { mutableStateOf(false) }
+    val shownGroups = if (onlyMine) {
+        groups.map { (label, dayItems) ->
+            label to dayItems.filter { it.id in trackedIds }
+        }
+    } else {
+        groups
+    }
     Column(modifier = modifier.fillMaxSize().background(NflixBackground)) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -631,13 +928,43 @@ private fun ScheduleWeekScreen(
                 modifier = Modifier.padding(start = 10.dp)
             )
         }
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Chỉ phim tôi theo dõi",
+                color = Color.White,
+                fontSize = 13.sp,
+                modifier = Modifier.weight(1f)
+            )
+            androidx.compose.material3.Switch(
+                checked = onlyMine,
+                onCheckedChange = { onlyMine = it },
+                colors = androidx.compose.material3.SwitchDefaults.colors(
+                    checkedTrackColor = NflixViolet,
+                    uncheckedTrackColor = Color(0xFF3A3A46),
+                    checkedThumbColor = Color.White,
+                    uncheckedThumbColor = Color.White
+                )
+            )
+        }
         if (groups.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = NflixViolet)
             }
+        } else if (shownGroups.all { it.second.isEmpty() }) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Chưa có phim theo dõi nào trong lịch tuần này.",
+                    color = NflixTextMuted,
+                    fontSize = 13.sp
+                )
+            }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                groups.forEach { (label, dayItems) ->
+                shownGroups.forEach { (label, dayItems) ->
                     if (dayItems.isNotEmpty()) {
                         item { SectionHeader(label) }
                         items(dayItems, key = { "${label}_${it.id}" }) { item ->

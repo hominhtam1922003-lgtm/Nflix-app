@@ -109,6 +109,41 @@ class NetTruyenSource(
     suspend fun byGenre(genreSlug: String, page: Int = 1): List<TitleItem> =
         parseItems(getDoc("/tim-truyen/$genreSlug?page=$page"))
 
+    /**
+     * Genre list with an explicit sort code (all verified live 2026-11-01,
+     * each returns a genuinely different order): 13 = Top ngày, 12 = Top
+     * tuần, 11 = Top tháng, 19 = Top Follow, 15 = Truyện mới ra mắt.
+     */
+    suspend fun byGenreSorted(genreSlug: String, sort: Int, page: Int = 1): List<TitleItem> =
+        parseItems(getDoc("/tim-truyen/$genreSlug?sort=$sort&page=$page"))
+
+    /** Top tháng (sort=11) — real monthly chart for the Top tab. */
+    suspend fun topMonth(page: Int = 1): List<TitleItem> =
+        byGenreSorted(MANHWA_GENRE, 11, page)
+
+    /** Top Follow (sort=19) — most-followed manhwa. */
+    suspend fun topFollow(page: Int = 1): List<TitleItem> =
+        byGenreSorted(MANHWA_GENRE, 19, page)
+
+    /** "Mới tinh" (sort=15): brand-new series, not new chapters of old ones. */
+    suspend fun newest(page: Int = 1): List<TitleItem> =
+        byGenreSorted(MANHWA_GENRE, 15, page)
+
+    /**
+     * Genre list filtered by completion status (status: 1 = đang tiến hành,
+     * 2 = hoàn thành — verified two-sided against detail pages 2026-11-01).
+     */
+    suspend fun byGenreStatus(genreSlug: String, status: Int, page: Int = 1): List<TitleItem> =
+        parseItems(getDoc("/tim-truyen/$genreSlug?status=$status&page=$page"))
+
+    /** "Trọn bộ": the whole Manhwa category, completed only. */
+    suspend fun completed(page: Int = 1): List<TitleItem> =
+        byGenreStatus(MANHWA_GENRE, 2, page)
+
+    /** "Trọn bộ" within one genre. */
+    suspend fun completedByGenre(genreSlug: String, page: Int = 1): List<TitleItem> =
+        byGenreStatus(genreSlug, 2, page)
+
     suspend fun search(keyword: String): List<TitleItem> {
         val q = java.net.URLEncoder.encode(keyword, "UTF-8")
         return parseItems(getDoc("/tim-truyen?keyword=$q"))
@@ -167,6 +202,19 @@ class NetTruyenSource(
         }
 
         val total = chapters.maxOfOrNull { it.number }?.toInt() ?: 0
+        // Genres: the "Thể loại" row of the detail info block (ul.list-info
+        // li.kind) — scoped there so the site-wide genre menu is not picked
+        // up (verified live 2026-11-01).
+        val genreLinks = mutableListOf<Pair<String, String>>()
+        for (a in doc.select("ul.list-info li.kind a[href*=/tim-truyen/]")) {
+            val href = a.attr("href")
+            val gSlug = href.substringAfter("/tim-truyen/").trimEnd('/')
+                .substringBefore('/').substringBefore('?')
+            val gLabel = a.text().trim()
+            if (gSlug.isNotBlank() && gLabel.isNotBlank() && genreLinks.none { it.second == gSlug }) {
+                genreLinks.add(gLabel to gSlug)
+            }
+        }
         val item = TitleItem(
             id = "${Family.MANHWA.name}:$SOURCE_ID:$slug",
             family = Family.MANHWA,
@@ -176,14 +224,16 @@ class NetTruyenSource(
             posterUrl = poster,
             thumbUrl = poster,
             latestLabel = if (total > 0) "Chap $total" else "",
-            episodeCount = total
+            episodeCount = total,
+            genres = genreLinks.map { it.first }
         )
         return TitleDetail(
             item = item,
             description = desc,
             status = status,
             totalCount = total,
-            chapters = chapters
+            chapters = chapters,
+            genreLinks = genreLinks
         )
     }
 

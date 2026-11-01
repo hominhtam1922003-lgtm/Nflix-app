@@ -69,6 +69,7 @@ fun HomeScreen(
     onPlayDirect: (TitleItem) -> Unit,
     onResume: (TitleItem) -> Unit,
     onGoSearch: () -> Unit,
+    onOpenFirstNew: (TitleItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.state.collectAsState()
@@ -95,7 +96,13 @@ fun HomeScreen(
                 onOpenTitle = onOpenTitle,
                 modifier = modifier,
                 newCountOf = { item -> newList.firstOrNull { it.item.id == item.id }?.newCount ?: 0 },
-                unitOf = { viewModel.unitOf(it) }
+                unitOf = { viewModel.unitOf(it) },
+                newRangeOf = { item ->
+                    newList.firstOrNull { it.item.id == item.id }
+                        ?.takeIf { it.newSeen > 0 }
+                        ?.let { it.newSeen to it.newLatest }
+                },
+                onOpenFirstNew = onOpenFirstNew
             )
             return
         }
@@ -113,6 +120,26 @@ fun HomeScreen(
             TitleListScreen(
                 title = "Mới nhất",
                 items = state.latestList,
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
+        "today" -> {
+            TitleGridScreen(
+                title = "Hôm nay có gì",
+                items = state.todayList,
+                onBack = { showAll = null },
+                onOpenTitle = onOpenTitle,
+                modifier = modifier
+            )
+            return
+        }
+        "foryou" -> {
+            TitleGridScreen(
+                title = state.forYouTitle,
+                items = state.forYouList,
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
                 modifier = modifier
@@ -222,10 +249,31 @@ fun HomeScreen(
                             NewEpisodeCard(
                                 entry = entry,
                                 unit = viewModel.unitOf(entry.item),
-                                onClick = { onOpenTitle(entry.item) }
+                                // C1: straight to the first unseen new unit.
+                                onClick = { onOpenFirstNew(entry.item) }
                             )
                         }
                     }
+                }
+                "today" -> if (state.todayList.isNotEmpty()) {
+                    com.example.nflix.ui.components.PosterShelf(
+                        title = "Hôm nay có gì",
+                        items = state.todayList,
+                        onItemClick = onOpenTitle,
+                        modifier = Modifier.padding(top = 6.dp),
+                        actionLabel = "Xem tất cả",
+                        onAction = { showAll = "today" }
+                    )
+                }
+                "foryou" -> if (state.forYouList.isNotEmpty()) {
+                    com.example.nflix.ui.components.PosterShelf(
+                        title = state.forYouTitle,
+                        items = state.forYouList,
+                        onItemClick = onOpenTitle,
+                        modifier = Modifier.padding(top = 6.dp),
+                        actionLabel = "Xem tất cả",
+                        onAction = { showAll = "foryou" }
+                    )
                 }
                 "suggested" -> if (state.suggestedList.isNotEmpty()) {
                     com.example.nflix.ui.components.PosterShelf(
@@ -275,7 +323,8 @@ private fun NewEpisodeCard(entry: ShelfEntry, unit: String, onClick: () -> Unit)
             contentDescription = item.name,
             modifier = Modifier
                 .size(width = 46.dp, height = 62.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(8.dp)),
+            title = item.name
         )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -291,7 +340,12 @@ private fun NewEpisodeCard(entry: ShelfEntry, unit: String, onClick: () -> Unit)
             val sub = listOf(item.family.label, countText, time).filter { it.isNotBlank() }.joinToString(" · ")
             Text(sub, color = NflixTextMuted, fontSize = 12.sp, maxLines = 1)
         }
-        com.example.nflix.ui.components.PlusPill(entry.newCount, unit)
+        // C1: name the new range when the baseline is known.
+        if (entry.newSeen > 0 && entry.newLatest > entry.newSeen) {
+            com.example.nflix.ui.components.NewUnitsPill(entry.newSeen, entry.newLatest, unit)
+        } else {
+            com.example.nflix.ui.components.PlusPill(entry.newCount, unit)
+        }
     }
 }
 
@@ -365,7 +419,8 @@ private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -
             primary = item.thumbUrl,
             fallback = item.posterUrl,
             contentDescription = item.name,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            title = item.name
         )
         Box(
             modifier = Modifier

@@ -64,7 +64,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
+import androidx.compose.foundation.gestures.scrollBy
+import coil.compose.SubcomposeAsyncImage
 import com.example.nflix.NflixApp
 import com.example.nflix.R
 import com.example.nflix.data.AppSettings
@@ -82,7 +83,9 @@ import com.example.nflix.ui.theme.NflixSurfaceVariant
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
 import com.example.nflix.ui.theme.NflixVioletSoft
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,13 +123,20 @@ fun ReaderScreen(
             chromeShown = false
         }
     }
+    // B5: auto-scroll pause — tapping the page pauses/resumes the drift.
+    var scrollPaused by remember { mutableStateOf(false) }
     val toggleChrome: () -> Unit = {
         if (settings.readerAutoHideChrome) chromeShown = !chromeShown
     }
     val tapToggle = Modifier.clickable(
         interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
         indication = null
-    ) { toggleChrome() }
+    ) {
+        toggleChrome()
+        if (settings.readerAutoScroll && settings.readerMode == "SCROLL") {
+            scrollPaused = !scrollPaused
+        }
+    }
 
     val totalPages = state.pages.size
     val displayPage = (scrubPage?.toInt() ?: state.currentPage).coerceIn(1, maxOf(1, totalPages))
@@ -183,6 +193,31 @@ fun ReaderScreen(
             if (state.pages.isNotEmpty()) viewModel.onPageVisible(page + 1)
         }
     }
+    // C5 (K7): near the end of the chapter, warm the next chapter's pages —
+    // SCROLL when 3 or fewer pages remain, PAGE at the penultimate page.
+    LaunchedEffect(state.currentPage, state.pages.size, settings.readerMode) {
+        val total = state.pages.size
+        if (total <= 0) return@LaunchedEffect
+        val remaining = total - state.currentPage
+        val nearEnd = if (settings.readerMode == "PAGE") remaining <= 1 else remaining <= 3
+        if (nearEnd) viewModel.prefetchNextChapter()
+    }
+    // B5: hands-free auto-scroll (SCROLL mode only). Dragging pauses via
+    // isScrollInProgress; tapping a page toggles scrollPaused (see tapToggle).
+    val autoScrollRunning = settings.readerAutoScroll &&
+        settings.readerMode == "SCROLL" && !scrollPaused && state.pages.isNotEmpty()
+    LaunchedEffect(autoScrollRunning, state.chapter?.number, settings.readerAutoScrollSpeed) {
+        if (!autoScrollRunning) return@LaunchedEffect
+        val pxPerTick = when (settings.readerAutoScrollSpeed) {
+            "SLOW" -> 3f
+            "FAST" -> 14f
+            else -> 7f
+        }
+        while (true) {
+            kotlinx.coroutines.delay(50)
+            if (!listState.isScrollInProgress) listState.scrollBy(pxPerTick)
+        }
+    }
 
     fun jumpToPage(page: Int) {
         val target = page.coerceIn(1, maxOf(1, totalPages))
@@ -214,8 +249,9 @@ fun ReaderScreen(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize()
             ) { page ->
-                AsyncImage(
-                    model = state.pages[page],
+                ReaderPageImage(
+                    url = state.pages[page],
+                    pageNumber = page + 1,
                     contentDescription = "Trang ${page + 1}",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize().then(tapToggle)
@@ -226,9 +262,10 @@ fun ReaderScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                itemsIndexed(state.pages, key = { i, _ -> i }) { _, url ->
-                    AsyncImage(
-                        model = url,
+                itemsIndexed(state.pages, key = { i, _ -> i }) { index, url ->
+                    ReaderPageImage(
+                        url = url,
+                        pageNumber = index + 1,
                         contentDescription = null,
                         contentScale = ContentScale.FillWidth,
                         modifier = Modifier.fillMaxWidth().background(Color(0xFF101016)).then(tapToggle)
@@ -255,6 +292,15 @@ fun ReaderScreen(
                     }
                 }
             }
+        }
+
+        // B5: warm eye-protection overlay (strength from reading settings).
+        // A plain Box consumes no touches, so page taps still reach images.
+        if (settings.readerEyeFilter > 0f) {
+            Box(
+                modifier = Modifier.fillMaxSize()
+                    .background(Color(0xFFFF9E45).copy(alpha = settings.readerEyeFilter))
+            )
         }
 
         // Top bar (floating) — part of the toggleable chrome.
@@ -308,7 +354,28 @@ fun ReaderScreen(
                         )
                         DropdownMenuItem(
                             text = { Text("Báo lỗi chap", color = Color.White) },
-                            onClick = { showMenu = false; reportNote = true }
+                            onClick = {
+                                showMenu = false
+                                // 0.4: REAL report now (was a fake toast) —
+                                // title, chapter and source go to the store.
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        com.example.nflix.data.ReportStore.add(
+                                            context,
+                                            com.example.nflix.data.ErrorReport(
+                                                timeEpochSec = System.currentTimeMillis() / 1000,
+                                                family = item.family.name,
+                                                titleId = item.id,
+                                                titleName = item.name,
+                                                unitLabel = state.chapter?.label ?: chapter.label,
+                                                server = viewModel.sourceDisplayName(),
+                                                message = "Người dùng báo lỗi chap này trong trình đọc"
+                                            )
+                                        )
+                                    }
+                                    reportNote = true
+                                }
+                            }
                         )
                     }
                 }
@@ -396,6 +463,24 @@ fun ReaderScreen(
                         modifier = Modifier.size(20.dp)
                     )
                 }
+                if (settings.readerMode == "SCROLL") {
+                    // B5: quick auto-scroll toggle (speed lives in the sheet).
+                    Box(
+                        modifier = Modifier
+                            .clip(pillShape)
+                            .background(if (settings.readerAutoScroll) NflixViolet else NflixSurfaceVariant)
+                            .clickable {
+                                val next = !settings.readerAutoScroll
+                                scrollPaused = false
+                                scope.launch {
+                                    app.settings.set(SettingsStore.READER_AUTOSCROLL, next)
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 9.dp)
+                    ) {
+                        Text("Tự cuộn", color = Color.White, fontSize = 13.sp)
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .clip(pillShape)
@@ -450,6 +535,55 @@ fun ReaderScreen(
             brightness = brightness,
             onBrightness = { brightness = it },
             onClose = { showSettings = false }
+        )
+    }
+}
+
+/**
+ * One reader page. A failed page is no longer a silent hole in the chapter
+ * (K6): it shows a placeholder with the page number and a per-page retry.
+ * Reloading bumps a key so Coil issues a fresh request for that page only.
+ */
+@Composable
+private fun ReaderPageImage(
+    url: String,
+    pageNumber: Int,
+    contentDescription: String?,
+    contentScale: ContentScale,
+    modifier: Modifier = Modifier
+) {
+    var reloadKey by remember(url) { mutableIntStateOf(0) }
+    androidx.compose.runtime.key(url, reloadKey) {
+        SubcomposeAsyncImage(
+            model = url,
+            contentDescription = contentDescription,
+            contentScale = contentScale,
+            modifier = modifier,
+            error = {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(220.dp)
+                        .background(Color(0xFF14141B)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "Trang $pageNumber chưa tải được",
+                            color = NflixTextMuted,
+                            fontSize = 13.sp
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(NflixViolet)
+                                .clickable { reloadKey++ }
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Text("Tải lại trang này", color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
         )
     }
 }
@@ -693,6 +827,66 @@ private fun ReaderSettingsSheet(
                 value = brightness ?: 0.7f,
                 onValueChange = { onBrightness(it) },
                 valueRange = 0.1f..1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = NflixViolet,
+                    activeTrackColor = NflixViolet,
+                    inactiveTrackColor = Color(0xFF3A3A46)
+                )
+            )
+            // B5: auto-scroll (SCROLL mode) + speed.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Tự cuộn trang", color = Color.White, fontSize = 14.sp)
+                    Text("Chỉ ở chế độ Cuộn dọc — chạm màn hình để tạm dừng", color = NflixTextMuted, fontSize = 12.sp)
+                }
+                Switch(
+                    checked = settings.readerAutoScroll,
+                    onCheckedChange = { on ->
+                        scope.launch { app.settings.set(SettingsStore.READER_AUTOSCROLL, on) }
+                    },
+                    colors = SwitchDefaults.colors(checkedTrackColor = NflixViolet)
+                )
+            }
+            if (settings.readerAutoScroll) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    listOf("SLOW" to "Chậm", "NORMAL" to "Vừa", "FAST" to "Nhanh").forEach { (key, label) ->
+                        val selected = settings.readerAutoScrollSpeed == key
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(if (selected) NflixVioletSoft else NflixBackground)
+                                .then(
+                                    if (selected) Modifier.border(1.dp, NflixViolet, RoundedCornerShape(50))
+                                    else Modifier
+                                )
+                                .clickable {
+                                    scope.launch {
+                                        app.settings.setString(SettingsStore.READER_AUTOSCROLL_SPEED, key)
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 9.dp)
+                        ) {
+                            Text(label, color = if (selected) NflixViolet else Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            // B5: warm eye-protection filter strength (0 = off).
+            Text(
+                "Lọc bảo vệ mắt" +
+                    if (settings.readerEyeFilter <= 0f) " — đang tắt"
+                    else " — ${(settings.readerEyeFilter * 100).toInt()}%",
+                color = NflixTextMuted,
+                fontSize = 12.sp
+            )
+            Slider(
+                value = settings.readerEyeFilter,
+                onValueChange = { v ->
+                    scope.launch { app.settings.setFloat(SettingsStore.READER_EYE_FILTER, v) }
+                },
+                valueRange = 0f..0.45f,
                 colors = SliderDefaults.colors(
                     thumbColor = NflixViolet,
                     activeTrackColor = NflixViolet,

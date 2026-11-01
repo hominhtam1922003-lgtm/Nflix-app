@@ -29,6 +29,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nflix.data.local.UserStateEntity
+import com.example.nflix.data.local.watchedSet
 import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.Family
@@ -161,7 +162,7 @@ private fun NflixShell() {
             }
             try {
                 val detail = when (item.family) {
-                    Family.PHIM, Family.ANIME -> app.kkPhim.detail(item.slug)
+                    Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
                     Family.DONGHUA -> app.hhKungfu.detail(item.slug)
                     Family.MANHWA -> app.netTruyen.detail(item.slug)
                     Family.TRUYEN -> app.truyenQq.detail(item.slug)
@@ -178,6 +179,53 @@ private fun NflixShell() {
                         val episode = server?.episodes?.maxByOrNull { it.number }
                         if (server != null && episode != null) playVideo(item, episode, server)
                         else openTitle(item)
+                    }
+                }
+            } catch (e: Exception) {
+                openTitle(item)
+            }
+        }
+    }
+
+    // C1 (K8): "Có tập mới" jump — open the FIRST unseen new unit directly.
+    // The target is positional in the app's own model: units are consumed in
+    // ascending order up to seenCount, so the first unit past that mark that
+    // is not in watchedUnits is the oldest new one. Display/navigation only:
+    // opening it consumes through the normal player/reader save path, and if
+    // the detail cannot be loaded we fall back to the Detail screen.
+    val openFirstNew: (TitleItem) -> Unit = { item ->
+        shellScope.launch {
+            val st = app.database.userStateDao().get(item.id)
+            val watched = st?.watchedSet() ?: emptySet()
+            val seen = st?.seenCount ?: 0
+            try {
+                val detail = when (item.family) {
+                    Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
+                    Family.DONGHUA -> app.hhKungfu.detail(item.slug)
+                    Family.MANHWA -> app.netTruyen.detail(item.slug)
+                    Family.TRUYEN -> app.truyenQq.detail(item.slug)
+                }
+                when (item.family) {
+                    Family.TRUYEN, Family.MANHWA -> {
+                        val ascending = detail.chapters.sortedBy { it.number }
+                        val chapter = ascending.drop(seen).firstOrNull { it.number !in watched }
+                            ?: ascending.firstOrNull { it.number !in watched }
+                        if (chapter != null) readChapter(item, chapter) else openTitle(item)
+                    }
+                    else -> {
+                        var played = false
+                        val servers = detail.servers.sortedByDescending { it.episodes.size }
+                        for (server in servers) {
+                            val ascending = server.episodes.sortedBy { it.number }
+                            val episode = ascending.drop(seen).firstOrNull { it.number !in watched }
+                                ?: ascending.firstOrNull { it.number !in watched }
+                            if (episode != null) {
+                                playVideo(item, episode, server)
+                                played = true
+                                break
+                            }
+                        }
+                        if (!played) openTitle(item)
                     }
                 }
             } catch (e: Exception) {
@@ -207,7 +255,8 @@ private fun NflixShell() {
                 item = detailItem!!,
                 onBack = { detailItem = null },
                 onPlay = playVideo,
-                onRead = readChapter
+                onRead = readChapter,
+                onOpenTitle = openTitle
             )
             return
         }
@@ -278,7 +327,8 @@ private fun NflixShell() {
                     family = familyRoute!!,
                     onFamilyChange = { familyRoute = it },
                     onOpenTitle = openTitle,
-                    onGoSearch = { searchOpen = true }
+                    onGoSearch = { searchOpen = true },
+                    onOpenFirstNew = openFirstNew
                 )
                 selected == 0 -> {
                     val homeVm: HomeViewModel = viewModel()
@@ -288,7 +338,8 @@ private fun NflixShell() {
                         onFamilyChip = { familyRoute = it },
                         onPlayDirect = playDirect,
                         onResume = resumeByItem,
-                        onGoSearch = { searchOpen = true }
+                        onGoSearch = { searchOpen = true },
+                        onOpenFirstNew = openFirstNew
                     )
                 }
                 selected == 1 -> TopScreen(onOpenTitle = openTitle)
@@ -299,7 +350,8 @@ private fun NflixShell() {
                 )
                 else -> MyPageScreen(
                     onOpenTitle = openTitle,
-                    onOpenSettings = { settingsOpen = true }
+                    onOpenSettings = { settingsOpen = true },
+                    onOpenFirstNew = openFirstNew
                 )
             }
         }

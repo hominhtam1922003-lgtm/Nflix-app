@@ -3,6 +3,7 @@ package com.example.nflix.ui.search
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
+import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -69,9 +70,21 @@ class SearchViewModel(private val app: NflixApp) : ViewModel() {
             async { runCatching { app.kkPhim.search(query) }.getOrDefault(emptyList()) },
             async { runCatching { app.hhKungfu.search(query) }.getOrDefault(emptyList()) },
             async { runCatching { app.netTruyen.search(query) }.getOrDefault(emptyList()) },
-            async { runCatching { app.truyenQq.search(query) }.getOrDefault(emptyList()) }
+            async { runCatching { app.truyenQq.search(query) }.getOrDefault(emptyList()) },
+            // Đợt 4: cobe results ride last — dedupe below keeps the
+            // KKPhim copy of a shared title (identical slugs), so cobe
+            // only surfaces titles KKPhim does not have.
+            async { runCatching { app.cobe.search(query) }.getOrDefault(emptyList()) }
         )
-        val merged = deferred.awaitAll().flatten().distinctBy { it.id }
+        // Phim/Anime dedupe by slug across kkphim+cobe (their ids differ
+        // by source); other families keep the exact id.
+        val merged = deferred.awaitAll().flatten().distinctBy { item ->
+            if (item.family == Family.PHIM || item.family == Family.ANIME) {
+                "slug:${item.slug}"
+            } else {
+                item.id
+            }
+        }
         val nq = normalizeText(query)
         merged.sortedBy { item ->
             val nn = normalizeText(item.name)

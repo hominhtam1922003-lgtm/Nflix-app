@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -23,12 +24,16 @@ data class AppSettings(
     val notifyNewEpisode: Boolean = true,
     val lockScreenNotif: Boolean = true,
     val checkInterval: String = "CONTINUOUS",     // CONTINUOUS | HOURLY | SIX_HOURS | ON_OPEN
-    val homeShelves: List<String> = listOf("continue", "new", "suggested", "latest"),
+    val homeShelves: List<String> = listOf("continue", "new", "today", "suggested", "foryou", "latest"),
     val autoFallbackSource: Boolean = true,
     val adBlock: Boolean = true,
     val readerMode: String = "SCROLL",            // SCROLL | PAGE
     val readerKeepScreenOn: Boolean = true,
-    val readerAutoHideChrome: Boolean = true      // hide reader bars while reading; tap screen to show
+    val readerAutoHideChrome: Boolean = true,     // hide reader bars while reading; tap screen to show
+    val readerAutoScroll: Boolean = false,        // SCROLL mode: hands-free page drift
+    val readerAutoScrollSpeed: String = "NORMAL", // SLOW | NORMAL | FAST
+    val readerEyeFilter: Float = 0f,              // warm overlay strength 0..0.45, 0 = off
+    val shelvesMigrated: Boolean = false          // 1.1.0 one-time shelf-list merge done
 )
 
 class SettingsStore(context: Context) {
@@ -46,13 +51,17 @@ class SettingsStore(context: Context) {
             notifyNewEpisode = p[NOTIFY_NEW] ?: true,
             lockScreenNotif = p[LOCK_NOTIF] ?: true,
             checkInterval = p[CHECK_INTERVAL] ?: "CONTINUOUS",
-            homeShelves = (p[HOME_SHELVES] ?: "continue,new,suggested,latest")
+            homeShelves = (p[HOME_SHELVES] ?: "continue,new,today,suggested,foryou,latest")
                 .split(",").map { it.trim() }.filter { it.isNotEmpty() },
             autoFallbackSource = p[AUTO_FALLBACK] ?: true,
             adBlock = p[AD_BLOCK] ?: true,
             readerMode = p[READER_MODE] ?: "SCROLL",
             readerKeepScreenOn = p[READER_KEEP_ON] ?: true,
-            readerAutoHideChrome = p[READER_AUTOHIDE] ?: true
+            readerAutoHideChrome = p[READER_AUTOHIDE] ?: true,
+            readerAutoScroll = p[READER_AUTOSCROLL] ?: false,
+            readerAutoScrollSpeed = p[READER_AUTOSCROLL_SPEED] ?: "NORMAL",
+            readerEyeFilter = p[READER_EYE_FILTER] ?: 0f,
+            shelvesMigrated = p[SHELVES_MIGRATED] ?: false
         )
     }
 
@@ -61,6 +70,10 @@ class SettingsStore(context: Context) {
     }
 
     suspend fun setString(key: Preferences.Key<String>, value: String) {
+        store.edit { it[key] = value }
+    }
+
+    suspend fun setFloat(key: Preferences.Key<Float>, value: Float) {
         store.edit { it[key] = value }
     }
 
@@ -95,6 +108,41 @@ class SettingsStore(context: Context) {
         store.edit { it[SEARCH_HISTORY] = "" }
     }
 
+    /**
+     * C2 (K9): last background-check stamp per tracked title, stored as
+     * "titleId=epochSec;titleId=epochSec" (ids contain ':' but never ';'
+     * or '='). The worker rotates fairly through titles older than the
+     * per-run batch instead of a hard take(30) that starved the tail.
+     */
+    val workerStamps: Flow<Map<String, Long>> = store.data.map { p ->
+        (p[WORKER_STAMPS] ?: "").split(";")
+            .mapNotNull { entry ->
+                val idx = entry.lastIndexOf('=')
+                if (idx <= 0) null
+                else entry.substring(0, idx) to entry.substring(idx + 1).toLongOrNull()
+            }
+            .mapNotNull { (id, sec) -> sec?.let { id to it } }
+            .toMap()
+    }
+
+    suspend fun setWorkerStamps(stamps: Map<String, Long>) {
+        store.edit { p ->
+            p[WORKER_STAMPS] = stamps.entries.joinToString(";") { (id, sec) -> "$id=$sec" }
+        }
+    }
+
+    /**
+     * Đợt 4 (cobe): last API host that actually answered, cached so a host
+     * rotation (the site already changed its web domain once) self-heals —
+     * CobeSource rediscovers from the site's JS bundles and stores the new
+     * host here. Empty = never discovered; the source uses its fallback.
+     */
+    val cobeApiHost: Flow<String> = store.data.map { p -> p[COBE_API_HOST] ?: "" }
+
+    suspend fun setCobeApiHost(host: String) {
+        store.edit { it[COBE_API_HOST] = host }
+    }
+
     companion object {
         val QUALITY = stringPreferencesKey("quality_default")
         val VERSION_PRIORITY = stringPreferencesKey("version_priority")
@@ -111,6 +159,12 @@ class SettingsStore(context: Context) {
         val READER_MODE = stringPreferencesKey("reader_mode")
         val READER_KEEP_ON = booleanPreferencesKey("reader_keep_screen_on")
         val READER_AUTOHIDE = booleanPreferencesKey("reader_autohide_chrome")
+        val READER_AUTOSCROLL = booleanPreferencesKey("reader_autoscroll")
+        val READER_AUTOSCROLL_SPEED = stringPreferencesKey("reader_autoscroll_speed")
+        val READER_EYE_FILTER = floatPreferencesKey("reader_eye_filter")
+        val SHELVES_MIGRATED = booleanPreferencesKey("shelves_migrated_v110")
         val SEARCH_HISTORY = stringPreferencesKey("search_history")
+        val WORKER_STAMPS = stringPreferencesKey("worker_check_stamps")
+        val COBE_API_HOST = stringPreferencesKey("cobe_api_host")
     }
 }

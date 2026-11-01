@@ -12,8 +12,10 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.example.nflix.data.SettingsStore
 import com.example.nflix.data.local.NflixDatabase
+import com.example.nflix.data.source.CobeSource
 import com.example.nflix.data.source.HhKungfuSource
 import com.example.nflix.data.source.KkPhimSource
+import com.example.nflix.data.source.MergedPhimSource
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.source.TruyenQqSource
 import com.example.nflix.work.NewEpisodeWorker
@@ -36,6 +38,10 @@ class NflixApp : Application(), ImageLoaderFactory {
     }
 
     val kkPhim: KkPhimSource by lazy { KkPhimSource() }
+    val cobe: CobeSource by lazy { CobeSource(settings = settings) }
+
+    /** Đợt 4: merged Phim/Anime front (KKPhim identity + Cobe server groups). */
+    val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(kkPhim, cobe) }
     val truyenQq: TruyenQqSource by lazy { TruyenQqSource() }
     val hhKungfu: HhKungfuSource by lazy { HhKungfuSource() }
     val netTruyen: NetTruyenSource by lazy { NetTruyenSource() }

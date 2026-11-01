@@ -2,6 +2,8 @@ package com.example.nflix.ui.reader
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import coil.imageLoader
+import coil.request.ImageRequest
 import com.example.nflix.NflixApp
 import com.example.nflix.data.local.UserStateEntity
 import com.example.nflix.data.local.watchedSet
@@ -149,6 +151,35 @@ class ReaderViewModel(
         return st.bookmarkPage > 0 &&
             st.bookmarkChapter == (s.chapter?.number ?: -1f) &&
             st.bookmarkPage == s.currentPage
+    }
+
+    /** Chapter numbers whose pages were already warmed into the image cache. */
+    private val prefetchedChapters = mutableSetOf<Float>()
+
+    /**
+     * C5 (K7): near the end of the current chapter, warm the NEXT chapter's
+     * page images into the Coil cache (in-session prefetch only — nothing is
+     * stored as a download). "Đọc tiếp" then renders instantly instead of
+     * starting from zero on a slow host. No-op without a next chapter.
+     */
+    fun prefetchNextChapter() {
+        val next = nextChapter() ?: return
+        if (!prefetchedChapters.add(next.number)) return
+        viewModelScope.launch {
+            try {
+                val urls = when (item.sourceId) {
+                    "nettruyen" -> app.netTruyen.chapterPages(next.id)
+                    else -> app.truyenQq.chapterPages(next.id)
+                }
+                val loader = app.imageLoader
+                urls.forEach { url ->
+                    loader.enqueue(ImageRequest.Builder(app).data(url).build())
+                }
+            } catch (e: Exception) {
+                // Warm-up failed — allow a later near-end pass to try again.
+                prefetchedChapters.remove(next.number)
+            }
+        }
     }
 
     fun prevChapter(): ChapterItem? {
