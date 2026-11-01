@@ -126,6 +126,10 @@ private fun DeadCoverPlaceholder(
             .clickable(onClick = onRetry)
             .padding(6.dp)
     ) {
+        // Captured here: inside the Column below, the constraints scope is no
+        // longer an implicit receiver (layout DslMarker), so read them as locals.
+        val frameWidth = maxWidth
+        val frameHeight = maxHeight
         val initials = title.split(" ")
             .filter { it.isNotBlank() }
             .take(2)
@@ -138,10 +142,10 @@ private fun DeadCoverPlaceholder(
             Text(
                 initials.ifBlank { "?" },
                 color = NflixViolet,
-                fontSize = if (maxWidth >= 90.dp) 20.sp else 14.sp,
+                fontSize = if (frameWidth >= 90.dp) 20.sp else 14.sp,
                 fontWeight = FontWeight.Bold
             )
-            if (title.isNotBlank() && maxWidth >= 70.dp) {
+            if (title.isNotBlank() && frameWidth >= 70.dp) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     title,
@@ -152,7 +156,7 @@ private fun DeadCoverPlaceholder(
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
-            if (maxHeight >= 110.dp) {
+            if (frameHeight >= 110.dp) {
                 Spacer(Modifier.height(4.dp))
                 Text("Chạm để tải lại", color = NflixTextMuted, fontSize = 9.sp)
             }

@@ -91,12 +91,14 @@ fun FamilyScreen(
     var showAll by remember { mutableStateOf<String?>(null) }
     var showFilter by remember { mutableStateOf(false) }
 
+    // Local copy: state is delegate-backed, so state.donghuaGenre cannot smart-cast.
+    val donghuaGenre = state.donghuaGenre
     val shelfTitle = when (family) {
         Family.PHIM -> "Đang thịnh hành"
         Family.ANIME -> "Đang thịnh hành"
         Family.DONGHUA ->
             if (state.donghuaCompleted) "Trọn bộ"
-            else if (state.donghuaGenre != null) state.donghuaGenre.first
+            else if (donghuaGenre != null) donghuaGenre.first
             else if (state.contextIndex == 0) "Ra tập mới hôm nay"
             else "Ra tập mới ${FamilyViewModel.DAY_LABELS[state.contextIndex]}"
         Family.MANHWA ->
