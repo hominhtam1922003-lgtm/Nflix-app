@@ -61,7 +61,7 @@ class NewEpisodeWorker(
                     "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)
-                    else -> app.truyenQq.detail(item.slug)
+                    else -> app.truyenQq.detail(item.slug, item.family)
                 }
                 maxOf(detail.totalCount, detail.item.episodeCount)
             }.getOrDefault(0)

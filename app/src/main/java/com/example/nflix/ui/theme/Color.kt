@@ -10,6 +10,8 @@ val NflixBorder = Color(0xFF262630)
 val NflixViolet = Color(0xFF8B7CFF)
 val NflixVioletSoft = Color(0x338B7CFF)
 val NflixOrange = Color(0xFFFF9F2E)
+/** 1.2.0: approved filter-sheet group-label color (user picked bright orange on the mockup). */
+val NflixOrangeBright = Color(0xFFFF9E2C)
 val NflixAmber = Color(0xFFFFB020)
 val NflixGold = Color(0xFFFFC53D)
 val NflixRed = Color(0xFFE5484D)

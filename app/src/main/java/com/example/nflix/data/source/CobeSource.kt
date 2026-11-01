@@ -231,15 +231,38 @@ class CobeSource(
         else -> ""
     }
 
+    /**
+     * 1.2.0: completion from EPISODE COUNTS only. The raw `status` string
+     * lies (One Piece is "completed" while airing; JoJo SBR is "completed"
+     * at 8/12) — but an "(8/12)" pair or a released count below the total
+     * never does. Movies are complete by definition.
+     */
+    private fun deriveCompleted(m: JSONObject): Boolean {
+        if (m.optString("type") == "movie") return true
+        val epCurrent = m.optString("episode_current").trim()
+        if (epCurrent.equals("Full", true)) return true
+        val pair = Regex("\\((\\d+)\\s*/\\s*(\\d+)\\)").find(epCurrent)
+        val total = pair?.groupValues?.get(2)?.toIntOrNull()
+            ?: m.optInt("episode_total").takeIf { it > 0 }
+            ?: return false
+        val current = pair?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("\\d+").find(epCurrent)?.value?.toIntOrNull()
+            ?: return false
+        return total > 0 && current >= total
+    }
+
     private fun parseItem(m: JSONObject, family: Family): TitleItem {
         val slug = m.optString("slug")
         val type = m.optString("type")
         val epCurrent = m.optString("episode_current").trim()
         val epNum = Regex("\\d+").find(epCurrent)?.value?.toIntOrNull() ?: 0
         val genres = mutableListOf<String>()
+        val genreSlugs = mutableListOf<String>()
         val cats = m.optJSONArray("categories") ?: JSONArray()
         for (i in 0 until cats.length()) {
-            cats.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }?.let { genres.add(it) }
+            val c = cats.optJSONObject(i) ?: continue
+            c.optString("name").takeIf { it.isNotBlank() }?.let { genres.add(it) }
+            c.optString("slug").takeIf { it.isNotBlank() }?.let { genreSlugs.add(it) }
         }
         val poster = m.optString("poster")
         val thumb = m.optString("thumbnail")
@@ -264,6 +287,8 @@ class CobeSource(
             episodeCount = if (type == "movie") 0 else epNum,
             year = m.optInt("publish_year"),
             genres = genres,
+            genreSlugs = genreSlugs,
+            completed = deriveCompleted(m),
             updatedEpochSec = parseUpdatedAt(m)
         )
     }
@@ -309,6 +334,83 @@ class CobeSource(
         return (0 until arr.length()).mapNotNull { i ->
             arr.optJSONObject(i)?.let { parseItem(it, Family.PHIM) }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Web listings (1.2.0) — the API's list endpoints are token-locked
+    // (401), but the Next.js pages embed the SAME full movie records in
+    // their RSC payload. Paths verified live 2026-11-01 (dossier
+    // COBE-ANIME-LIETKE): /the-loai/hoat-hinh (130 pages),
+    // /phim-bo (436), /phim-le (612), 32 records per page, updatedAt desc.
+    // ------------------------------------------------------------------
+
+    /**
+     * One web listing page: the items plus the source's total page count.
+     * Records are the full by-slug shape, so no per-title detail call is
+     * needed for lists. The payload is a JS string with one escape layer —
+     * unescaping `\"` once makes the embedded objects plain JSON; each
+     * `"item":{...}` object is then captured with a string-aware brace
+     * scan and parsed on its own.
+     */
+    suspend fun webListPage(path: String, page: Int, family: Family): Pair<List<TitleItem>, Int> {
+        val html = getText("$webBase$path?page=$page")
+        val totalPages = Regex("""\\"totalPages\\":(\d+)""").find(html)
+            ?.groupValues?.get(1)?.toIntOrNull() ?: page
+        val unescaped = html.replace("\\\"", "\"")
+        val items = mutableListOf<TitleItem>()
+        var from = 0
+        while (true) {
+            val idx = unescaped.indexOf("\"item\":{", from)
+            if (idx < 0) break
+            val start = idx + "\"item\":".length
+            val obj = captureObject(unescaped, start) ?: break
+            from = start + obj.length
+            runCatching { JSONObject(obj) }
+                .getOrNull()
+                ?.takeIf { it.optString("slug").isNotBlank() }
+                ?.let { items.add(parseItem(it, family)) }
+        }
+        return items.distinctBy { it.slug } to totalPages
+    }
+
+    /** String-aware balanced {...} capture starting at [start] (which must be '{'). */
+    private fun captureObject(text: String, start: Int): String? {
+        if (start >= text.length || text[start] != '{') return null
+        var depth = 0
+        var inString = false
+        var i = start
+        while (i < text.length) {
+            val c = text[i]
+            if (inString) {
+                if (c == '\\') {
+                    i += 2
+                    continue
+                }
+                if (c == '"') inString = false
+            } else {
+                when (c) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return text.substring(start, i + 1)
+                    }
+                }
+            }
+            i++
+        }
+        return null
+    }
+
+    /** The animation pool page (tab Anime's catalog) — raw, unfiltered. */
+    suspend fun animePoolPage(page: Int): Pair<List<TitleItem>, Int> =
+        webListPage("/the-loai/hoat-hinh", page, Family.ANIME)
+
+    /** Series / movie listing pages for the merged Phim catalog. */
+    suspend fun kindPage(kind: String, page: Int): Pair<List<TitleItem>, Int> = when (kind) {
+        "phim-bo" -> webListPage("/phim-bo", page, Family.PHIM)
+        "phim-le" -> webListPage("/phim-le", page, Family.PHIM)
+        else -> emptyList<TitleItem>() to page
     }
 
     suspend fun detail(slug: String, family: Family = Family.PHIM): TitleDetail {
@@ -365,11 +467,9 @@ class CobeSource(
                 }
             ),
             description = description,
-            status = when (m.optString("status")) {
-                "ongoing" -> "Đang tiến hành"
-                "completed" -> "Hoàn thành"
-                else -> ""
-            },
+            // Status also derives from counts (see deriveCompleted) — the
+            // raw field marks airing shows as completed.
+            status = if (deriveCompleted(m)) "Hoàn thành" else "Đang tiến hành",
             totalCount = total,
             durationLabel = m.optString("episode_time"),
             actors = peopleNames(m.optJSONArray("actors")),

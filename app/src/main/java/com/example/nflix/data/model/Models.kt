@@ -1,5 +1,16 @@
 package com.example.nflix.data.model
 
+/** Sheet "Trạng thái" group (1.2.0): single-select, none = all. */
+const val STATUS_ALL = 0
+const val STATUS_ONGOING = 1
+const val STATUS_COMPLETED = 2
+
+fun TitleItem.matchesStatus(status: Int): Boolean = when (status) {
+    STATUS_ONGOING -> !completed
+    STATUS_COMPLETED -> completed
+    else -> true
+}
+
 enum class Family(val label: String) {
     PHIM("Phim"),
     ANIME("Anime"),
@@ -24,6 +35,14 @@ data class TitleItem(
     val episodeCount: Int = 0,      // newest episode/chapter number known
     val year: Int = 0,
     val genres: List<String> = emptyList(),
+    /** 1.2.0: source-side genre slugs parallel to [genres] (local genre filtering). */
+    val genreSlugs: List<String> = emptyList(),
+    /**
+     * 1.2.0: completion derived from EPISODE COUNTS (never the raw status
+     * string — Cobe marks airing shows "completed"). Powers the
+     * "Đang ra tiếp | Trọn bộ" sheet group for Phim/Anime.
+     */
+    val completed: Boolean = false,
     val updatedEpochSec: Long = 0,  // for "x phút trước"
     val updatedLabel: String = "",  // pre-formatted relative time text from the source, when it gives text
     val isHot: Boolean = false,

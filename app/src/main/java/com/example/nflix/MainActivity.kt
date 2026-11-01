@@ -213,11 +213,17 @@ private fun NflixShell() {
                 return@launch
             }
             try {
-                val detail = when (item.family) {
-                    Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
-                    Family.DONGHUA -> app.hhKungfu.detail(item.slug)
-                    Family.MANHWA -> app.netTruyen.detail(item.slug)
-                    Family.TRUYEN -> app.truyenQq.detail(item.slug)
+                val detail = when {
+                    // 1.2.0: Manhwa genre results are TruyenQQ items —
+                    // route by the item's own source, not just its family.
+                    item.sourceId == "truyenqq" ->
+                        app.truyenQq.detail(item.slug, item.family)
+                    else -> when (item.family) {
+                        Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
+                        Family.DONGHUA -> app.hhKungfu.detail(item.slug)
+                        Family.MANHWA -> app.netTruyen.detail(item.slug)
+                        Family.TRUYEN -> app.truyenQq.detail(item.slug)
+                    }
                 }
                 when (item.family) {
                     Family.TRUYEN, Family.MANHWA -> {

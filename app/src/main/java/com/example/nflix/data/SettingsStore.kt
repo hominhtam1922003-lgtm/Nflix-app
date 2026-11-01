@@ -143,6 +143,34 @@ class SettingsStore(context: Context) {
         store.edit { it[COBE_API_HOST] = host }
     }
 
+    /**
+     * 1.2.0: the Manhwa genre index (TruyenQQ shelf items + their detail
+     * tags, built once and refreshed weekly — the shelf is 220 detail
+     * fetches on slow hosts). Stored as one JSON blob with its build time.
+     */
+    val manhwaIndexJson: Flow<String> = store.data.map { p -> p[MANHWA_INDEX] ?: "" }
+    val manhwaIndexBuiltAtMs: Flow<Long> = store.data.map { p ->
+        (p[MANHWA_INDEX_AT] ?: "0").toLongOrNull() ?: 0L
+    }
+
+    suspend fun setManhwaIndex(json: String) {
+        store.edit {
+            it[MANHWA_INDEX] = json
+            it[MANHWA_INDEX_AT] = System.currentTimeMillis().toString()
+        }
+    }
+
+    /**
+     * 1.2.0: cached Donghua slug pool (comma-joined). The Anime tab uses
+     * it to exclude donghua series Cobe also carries; a warm cache keeps
+     * the exclusion active while a fresh pool loads in the background.
+     */
+    val donghuaSlugs: Flow<String> = store.data.map { p -> p[DONGHUA_SLUGS] ?: "" }
+
+    suspend fun setDonghuaSlugs(slugs: Collection<String>) {
+        store.edit { it[DONGHUA_SLUGS] = slugs.joinToString(",") }
+    }
+
     companion object {
         val QUALITY = stringPreferencesKey("quality_default")
         val VERSION_PRIORITY = stringPreferencesKey("version_priority")
@@ -166,5 +194,8 @@ class SettingsStore(context: Context) {
         val SEARCH_HISTORY = stringPreferencesKey("search_history")
         val WORKER_STAMPS = stringPreferencesKey("worker_check_stamps")
         val COBE_API_HOST = stringPreferencesKey("cobe_api_host")
+        val MANHWA_INDEX = stringPreferencesKey("manhwa_index_json")
+        val MANHWA_INDEX_AT = stringPreferencesKey("manhwa_index_built_at")
+        val DONGHUA_SLUGS = stringPreferencesKey("donghua_slug_pool")
     }
 }

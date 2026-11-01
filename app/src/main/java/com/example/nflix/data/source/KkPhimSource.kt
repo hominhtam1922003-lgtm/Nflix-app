@@ -158,8 +158,20 @@ class KkPhimSource(
         val epCurrent = item.optString("episode_current")
         val epNum = Regex("\\d+").find(epCurrent)?.value?.toIntOrNull() ?: 0
         val genres = mutableListOf<String>()
+        val genreSlugs = mutableListOf<String>()
         val cats = item.optJSONArray("category") ?: JSONArray()
-        for (i in 0 until cats.length()) cats.optJSONObject(i)?.optString("name")?.let { genres.add(it) }
+        for (i in 0 until cats.length()) {
+            val c = cats.optJSONObject(i) ?: continue
+            c.optString("name").takeIf { it.isNotBlank() }?.let { genres.add(it) }
+            c.optString("slug").takeIf { it.isNotBlank() }?.let { genreSlugs.add(it) }
+        }
+        // 1.2.0: completion from counts, same rule as the Cobe adapter —
+        // episode_total is the PLANNED total; a series is complete when it
+        // is declared completed AND everything planned is actually out.
+        val kkTotal = item.optInt("episode_total")
+        val kkCompleted = item.optString("type") == "movie" ||
+            epCurrent.startsWith("Full", true) ||
+            (item.optString("status") == "completed" && (kkTotal <= 0 || epNum >= kkTotal))
         // Cross-fallback: ~3% of titles ship an empty thumb (or poster) — a
         // blank field must never reach the UI when the sibling image exists.
         val poster = imageUrl(item.optString("poster_url"))
@@ -179,6 +191,8 @@ class KkPhimSource(
             episodeCount = epNum,
             year = item.optInt("year"),
             genres = genres,
+            genreSlugs = genreSlugs,
+            completed = kkCompleted,
             updatedEpochSec = parseModified(item)
         )
     }

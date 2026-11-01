@@ -42,6 +42,11 @@ class NflixApp : Application(), ImageLoaderFactory {
 
     /** Đợt 4: merged Phim/Anime front (KKPhim identity + Cobe server groups). */
     val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(kkPhim, cobe) }
+
+    /** 1.2.0: Anime tab catalog rules over the Cobe animation pool. */
+    val animeCatalog: com.example.nflix.data.AnimeCatalog by lazy {
+        com.example.nflix.data.AnimeCatalog(cobe, hhKungfu, settings)
+    }
     val truyenQq: TruyenQqSource by lazy { TruyenQqSource() }
     val hhKungfu: HhKungfuSource by lazy { HhKungfuSource() }
     val netTruyen: NetTruyenSource by lazy { NetTruyenSource() }

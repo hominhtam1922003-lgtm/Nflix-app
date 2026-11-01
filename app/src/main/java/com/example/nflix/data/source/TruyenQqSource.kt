@@ -108,10 +108,54 @@ class TruyenQqSource(
             parseCards(doc.selectFirst("#contentstory") ?: doc)
     }
 
-    /** Genre listing — same card structure as the home page.
-     *  The site only renders the listing when ?page= is present — even for page 1. */
+    /**
+     * Genre listing — same card structure as the home page. The site only
+     * renders the listing when ?page= is present — even for page 1.
+     *
+     * 1.2.0 parser fix: the parse is SCOPED to the listing region. Every
+     * genre page also carries the "TRUYỆN PHỔ BIẾN" carousel (#owl-slide,
+     * ~14 cards) — parsing the whole document used to pass those off as
+     * the genre's own results, so dead genres (tien-hiep / kiem-hiep /
+     * quan-truong, whose listings are genuinely EMPTY) showed a full fake
+     * page. Prefer the .listing block; when absent, parse the document
+     * with the carousel removed. A page past the end (the source caps
+     * listings at 11 pages; page 12 is a 404) throws from getDoc and the
+     * caller treats it as end-of-list.
+     */
     suspend fun byGenre(genreSlug: String, page: Int = 1): List<TitleItem> =
-        parseCards(getDoc("/the-loai/$genreSlug?page=$page"))
+        parseListing(getDoc("/the-loai/$genreSlug?page=$page"))
+
+    /** Manhwa shelf (tab Manhwa's genre index base) — same listing, items re-homed to MANHWA. */
+    suspend fun manhwaShelf(page: Int = 1): List<TitleItem> =
+        parseListing(getDoc("/the-loai/manhwa?page=$page"), Family.MANHWA)
+
+    /** Scoped listing parse: .listing when present, else document minus #owl-slide. */
+    private fun parseListing(doc: Document, family: Family = Family.TRUYEN): List<TitleItem> {
+        doc.selectFirst(".listing")?.let { return parseCards(it, family) }
+        val cleaned = doc.clone()
+        cleaned.select("#owl-slide").remove()
+        return parseCards(cleaned, family)
+    }
+
+    /**
+     * Slugs of the completed catalog (/truyen-full), fetched page by page
+     * until an empty page or [maxPages]. Powers the Truyện "Đang ra tiếp"
+     * status (the source has no ongoing listing: ongoing = a genre/home
+     * listing MINUS this set).
+     */
+    suspend fun completedSlugs(maxPages: Int = 11): Set<String> {
+        val out = mutableSetOf<String>()
+        for (p in 1..maxPages) {
+            val items = try {
+                completed(p)
+            } catch (e: Exception) {
+                break
+            }
+            if (items.isEmpty()) break
+            items.forEach { out.add(it.slug) }
+        }
+        return out
+    }
 
     /**
      * "Truyện Full đã hoàn thành" listing (verified live 2026-11-01:
@@ -162,7 +206,10 @@ class TruyenQqSource(
         return out
     }
 
-    private fun parseCards(scope: org.jsoup.nodes.Element): List<TitleItem> {
+    private fun parseCards(
+        scope: org.jsoup.nodes.Element,
+        family: Family = Family.TRUYEN
+    ): List<TitleItem> {
         val seen = LinkedHashMap<String, TitleItem>()
         for (card in scope.select("div.item")) {
             val anchor = card.select("a[href]").firstOrNull { a ->
@@ -187,8 +234,8 @@ class TruyenQqSource(
             val chapMatch = Regex("[Cc]hapter\\s+(\\d+(?:\\.\\d+)?)").find(card.text())
             val chapNum = chapMatch?.groupValues?.get(1)?.toFloatOrNull() ?: 0f
             seen[slug] = TitleItem(
-                id = "${Family.TRUYEN.name}:$SOURCE_ID:$slug",
-                family = Family.TRUYEN,
+                id = "${family.name}:$SOURCE_ID:$slug",
+                family = family,
                 sourceId = SOURCE_ID,
                 slug = slug,
                 name = name,
@@ -202,7 +249,12 @@ class TruyenQqSource(
         return seen.values.toList()
     }
 
-    suspend fun detail(slug: String): TitleDetail {
+    /**
+     * Detail. [family] re-homes the item: manhwa titles browsed from the
+     * TruyenQQ manhwa shelf carry MANHWA ids so their Detail/Reader state
+     * lives with the Manhwa family (same record, different shelf).
+     */
+    suspend fun detail(slug: String, family: Family = Family.TRUYEN): TitleDetail {
         val doc = getDoc("/$slug")
         val ogTitle = doc.selectFirst("meta[property=og:title]")?.attr("content").orEmpty()
         val ogImage = doc.selectFirst("meta[property=og:image]")?.attr("content").orEmpty()
@@ -242,8 +294,8 @@ class TruyenQqSource(
             }
         }
         val item = TitleItem(
-            id = "${Family.TRUYEN.name}:$SOURCE_ID:$slug",
-            family = Family.TRUYEN,
+            id = "${family.name}:$SOURCE_ID:$slug",
+            family = family,
             sourceId = SOURCE_ID,
             slug = slug,
             name = name,

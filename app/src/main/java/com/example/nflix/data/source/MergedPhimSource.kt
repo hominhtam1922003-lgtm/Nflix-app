@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
+import com.example.nflix.data.model.matchesStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -38,15 +39,52 @@ class MergedPhimSource(
 
         /** Hard budget for the whole cobe branch of one merged detail. */
         private const val COBE_BUDGET_MS = 6_000L
+
+        /** Cobe pages scanned per filtered-browse page (local filtering horizon). */
+        private const val COBE_LOCAL_SCAN_PAGES = 3
     }
 
     /** Route by the title's own source: cobe-only titles stay pure cobe. */
     suspend fun detailFor(item: TitleItem): TitleDetail =
         if (item.sourceId == CobeSource.SOURCE_ID) {
-            cobe.detail(item.slug, item.family)
+            // 1.2.0 (Khối B): an Anime title lives on Cobe, but when
+            // KKPhim carries the same slug as hoạt hình its server groups
+            // join too — the user ordered ALL groups collected (Vietsub /
+            // Thuyết minh / Lồng tiếng / Song ngữ), none dropped.
+            if (item.family == Family.ANIME) animeDetail(item)
+            else cobe.detail(item.slug, item.family)
         } else {
             detail(item.slug, item.family)
         }
+
+    /**
+     * Cobe-first Anime detail: identity and groups from Cobe; KKPhim
+     * groups appended only when KKPhim really carries this slug as
+     * animation (a same-slug live-action title must never leak in).
+     */
+    private suspend fun animeDetail(item: TitleItem): TitleDetail {
+        val cb = cobe.detail(item.slug, Family.ANIME)
+        val kk = runCatching { kkPhim.detail(item.slug) }.getOrNull()
+            ?: return cb
+        if (kk.item.family != Family.ANIME || kk.servers.isEmpty()) return cb
+        val servers = cb.servers + kk.servers
+        val released = servers.maxOfOrNull { g ->
+            g.episodes.maxOfOrNull { it.number } ?: 0f
+        }?.toInt() ?: 0
+        val total = maxOf(cb.totalCount, kk.totalCount, released)
+        return TitleDetail(
+            item = cb.item.copy(episodeCount = maxOf(cb.item.episodeCount, total)),
+            description = cb.description.ifBlank { kk.description },
+            status = cb.status.ifBlank { kk.status },
+            totalCount = total,
+            durationLabel = cb.durationLabel.ifBlank { kk.durationLabel },
+            actors = cb.actors.ifEmpty { kk.actors },
+            directors = cb.directors.ifEmpty { kk.directors },
+            servers = servers,
+            trailerUrl = cb.trailerUrl.ifBlank { kk.trailerUrl },
+            genreLinks = cb.genreLinks.ifEmpty { kk.genreLinks }
+        )
+    }
 
     suspend fun detail(slug: String, familyHint: Family = Family.PHIM): TitleDetail = coroutineScope {
         val kkDeferred = async { runCatching { kkPhim.detail(slug) }.getOrNull() }
@@ -61,6 +99,91 @@ class MergedPhimSource(
             cb == null -> kk.copy(cobeFailed = cobeOutcome.failed)
             else -> merge(kk, cb)
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Merged LISTS (1.2.0, Khối A): the Phim catalog is the UNION of both
+    // sources — Cobe-only titles are first-class citizens of the tab, not
+    // just extra servers on KKPhim titles. Dedupe by slug; the KKPhim
+    // copy keeps the identity when both carry a title (its detail is the
+    // merged one anyway). Cobe lists come from its web pages (the API
+    // list endpoints are token-locked).
+    // ------------------------------------------------------------------
+
+    private fun union(pages: List<List<TitleItem>>): List<TitleItem> {
+        val bySlug = LinkedHashMap<String, TitleItem>()
+        for (page in pages) {
+            for (item in page) {
+                val cur = bySlug[item.slug]
+                if (cur == null ||
+                    (cur.sourceId != KkPhimSource.SOURCE_ID && item.sourceId == KkPhimSource.SOURCE_ID)
+                ) {
+                    bySlug[item.slug] = item
+                }
+            }
+        }
+        return bySlug.values.sortedByDescending { it.updatedEpochSec }
+    }
+
+    /** Newest-updated Phim feed: KKPhim latest + Cobe series + Cobe movies of the same page. */
+    suspend fun latestMerged(page: Int): List<TitleItem> = coroutineScope {
+        val kkD = async { runCatching { kkPhim.latest(page) }.getOrDefault(emptyList()) }
+        val boD = async { runCatching { cobe.kindPage("phim-bo", page).first }.getOrDefault(emptyList()) }
+        val leD = async { runCatching { cobe.kindPage("phim-le", page).first }.getOrDefault(emptyList()) }
+        union(listOf(kkD.await(), boD.await(), leD.await()))
+    }
+
+    /** Kind listing (phim-bo / phim-le) merged across both sources. */
+    suspend fun byKindMerged(kind: String, page: Int, limit: Int = 24): List<TitleItem> = coroutineScope {
+        if (kind == "chieu-rap") {
+            // Chiếu rạp is a KKPhim flag concept; Cobe has no such list.
+            return@coroutineScope kkPhim.cinema(page, limit)
+        }
+        val kkD = async { runCatching { kkPhim.listByKind(kind, page, limit) }.getOrDefault(emptyList()) }
+        val cbD = async { runCatching { cobe.kindPage(kind, page).first }.getOrDefault(emptyList()) }
+        union(listOf(kkD.await(), cbD.await())).take(limit + 16)
+    }
+
+    /**
+     * Filtered Phim browse: KKPhim filters server-side; the Cobe side is
+     * filtered LOCALLY over its kind pages (its API list is token-locked
+     * and its web pages carry full records). Genre matches on the shared
+     * Vietnamese category NAME (the slug systems differ: Cobe "hai" vs
+     * KKPhim "hai-huoc"); Cobe has no country field, so a country filter
+     * narrows only the KKPhim side. Status matches on derived counts.
+     */
+    suspend fun filteredMerged(
+        kind: String,
+        category: String = "",
+        country: String = "",
+        year: Int = 0,
+        status: Int = 0,
+        page: Int = 1,
+        limit: Int = 24
+    ): List<TitleItem> = coroutineScope {
+        val kkD = async {
+            runCatching {
+                kkPhim.listFiltered(kind, category, country, year, page, limit)
+            }.getOrDefault(emptyList()).filter { it.matchesStatus(status) }
+        }
+        val categoryName = KkPhimSource.CATEGORIES.firstOrNull { it.second == category }?.first
+        val cbD = async {
+            if (page > COBE_LOCAL_SCAN_PAGES) {
+                emptyList()
+            } else {
+                runCatching { cobe.kindPage(kind, page).first }.getOrDefault(emptyList())
+                    .filter { item ->
+                        (category.isEmpty() ||
+                            item.genreSlugs.contains(category) ||
+                            (categoryName != null && item.genres.any {
+                                it.equals(categoryName, ignoreCase = true)
+                            })) &&
+                            (year == 0 || item.year == year) &&
+                            item.matchesStatus(status)
+                    }
+            }
+        }
+        union(listOf(kkD.await(), cbD.await()))
     }
 
     /** Outcome of the cobe branch: the detail (if any) + whether the source itself failed. */

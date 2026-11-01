@@ -104,9 +104,15 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
         viewModelScope.launch {
             try {
                 val items = when (families[familyIndex]) {
-                    Family.PHIM -> app.kkPhim.latest(1)
+                    Family.PHIM -> app.mergedPhim.latestMerged(1)
                         .filter { it.family == Family.PHIM }.take(10)
-                    Family.ANIME -> app.kkPhim.anime(1).take(10)
+                    Family.ANIME -> {
+                        // 1.2.0 (Khối B): Top Anime comes from the Cobe
+                        // animation pool with the Donghua exclusion applied.
+                        app.animeCatalog.warmDonghuaSlugs()
+                        val (pool, _) = app.animeCatalog.poolPage(1)
+                        app.animeCatalog.visible(pool).take(10)
+                    }
                     Family.DONGHUA -> app.hhKungfu.topViewed(1).take(10)
                     Family.MANHWA -> when (period) {
                         0 -> app.netTruyen.hot(1)

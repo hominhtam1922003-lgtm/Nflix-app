@@ -44,8 +44,8 @@ class ReaderViewModel(
             try {
                 val detail = when (item.sourceId) {
                     "nettruyen" -> app.netTruyen.detail(item.slug)
-                    "truyenqq" -> app.truyenQq.detail(item.slug)
-                    else -> app.truyenQq.detail(item.slug)
+                    "truyenqq" -> app.truyenQq.detail(item.slug, item.family)
+                    else -> app.truyenQq.detail(item.slug, item.family)
                 }
                 app.database.titleDao().upsert(detail.item.toEntity())
                 val chapters = detail.chapters.sortedBy { it.number }

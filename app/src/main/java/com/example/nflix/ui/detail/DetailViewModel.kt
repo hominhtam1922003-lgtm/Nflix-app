@@ -80,7 +80,9 @@ class DetailViewModel(
                     "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)
-                    "truyenqq" -> app.truyenQq.detail(item.slug)
+                    // 1.2.0: a TruyenQQ item can belong to MANHWA (genre
+                    // results of the Manhwa tab) — keep its own family.
+                    "truyenqq" -> app.truyenQq.detail(item.slug, item.family)
                     else -> when (item.family) {
                         Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
                         Family.DONGHUA -> app.hhKungfu.detail(item.slug)
@@ -239,23 +241,43 @@ class DetailViewModel(
                 app.kkPhim.byCategory(slug, page = 1)
             }
             Family.ANIME -> {
-                val slug = detail.genreLinks.firstOrNull()?.second
-                    ?: kkGenreSlug(self.genres.firstOrNull())
+                // 1.2.0 (Khối B): related anime comes from the Cobe pool
+                // itself — same first genre NAME, Donghua exclusion on.
+                val genreName = self.genres.firstOrNull { !it.equals("Hoạt hình", true) }
+                    ?: self.genres.firstOrNull()
                     ?: return emptyList()
-                app.kkPhim.listFiltered(
-                    kind = "hoat-hinh", category = slug, country = "nhat-ban", page = 1
-                )
+                app.animeCatalog.warmDonghuaSlugs()
+                val pool = (1..2).flatMap { p ->
+                    app.animeCatalog.visible(app.animeCatalog.poolPage(p).first)
+                }
+                pool.filter {
+                    it.genres.any { g -> g.equals(genreName, ignoreCase = true) }
+                }
             }
             Family.DONGHUA -> {
                 val slug = detail.genreLinks.firstOrNull()?.second ?: return emptyList()
                 app.hhKungfu.byCategory(slug, page = 1)
             }
             Family.MANHWA -> {
-                // Skip the "Manhwa" umbrella category itself — a genre shelf
-                // keyed on it would just be the whole catalog again.
-                val link = detail.genreLinks.firstOrNull { it.second != NetTruyenSource.MANHWA_GENRE }
-                    ?: return emptyList()
-                app.netTruyen.byGenre(link.second, page = 1)
+                if (self.sourceId == "truyenqq") {
+                    // 1.2.0: a TruyenQQ manhwa title relates inside its own
+                    // source; results are re-homed to MANHWA so they keep
+                    // opening through the comic (TruyenQQ) route.
+                    val link = detail.genreLinks.firstOrNull { it.second != "manhwa" }
+                        ?: return emptyList()
+                    app.truyenQq.byGenre(link.second, page = 1).map { rel ->
+                        rel.copy(
+                            id = "${Family.MANHWA.name}:${rel.sourceId}:${rel.slug}",
+                            family = Family.MANHWA
+                        )
+                    }
+                } else {
+                    // Skip the "Manhwa" umbrella category itself — a genre shelf
+                    // keyed on it would just be the whole catalog again.
+                    val link = detail.genreLinks.firstOrNull { it.second != NetTruyenSource.MANHWA_GENRE }
+                        ?: return emptyList()
+                    app.netTruyen.byGenre(link.second, page = 1)
+                }
             }
             Family.TRUYEN -> {
                 val slug = detail.genreLinks.firstOrNull()?.second ?: return emptyList()

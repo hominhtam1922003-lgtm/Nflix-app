@@ -78,16 +78,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun loadShelves() {
+        // 1.2.0 (Khối A): Home's Phim shelves read the MERGED catalog
+        // (KKPhim + Cobe union) like the Phim tab does.
         viewModelScope.launch {
             try {
-                val latest = nflix.kkPhim.latest(page = 1)
+                val latest = nflix.mergedPhim.latestMerged(page = 1)
                 db.titleDao().upsertAll(latest.map { it.toEntity() })
                 _state.update { it.copy(latestList = latest) }
             } catch (e: Exception) { /* shelf stays hidden */ }
         }
         viewModelScope.launch {
             try {
-                val suggested = nflix.kkPhim.listByKind("phim-le", page = 1, limit = 12)
+                val suggested = nflix.mergedPhim.byKindMerged("phim-le", page = 1, limit = 12)
                 db.titleDao().upsertAll(suggested.map { it.toEntity() })
                 _state.update { it.copy(suggestedList = suggested) }
             } catch (e: Exception) { /* shelf stays hidden */ }
@@ -136,7 +138,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 emptyList()
             }
             val phimToday = try {
-                nflix.kkPhim.latest(page = 1)
+                nflix.mergedPhim.latestMerged(page = 1)
                     .filter { it.updatedEpochSec >= startOfToday }
             } catch (e: Exception) {
                 emptyList()
@@ -157,7 +159,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 "cobe" -> nflix.cobe.detail(item.slug, item.family).genreLinks
                 "hhkungfu" -> nflix.hhKungfu.detail(item.slug).genreLinks
                 "nettruyen" -> nflix.netTruyen.detail(item.slug).genreLinks
-                "truyenqq" -> nflix.truyenQq.detail(item.slug).genreLinks
+                "truyenqq" -> nflix.truyenQq.detail(item.slug, item.family).genreLinks
                 else -> emptyList()
             }
         } catch (e: Exception) {
@@ -234,7 +236,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadHero() {
         viewModelScope.launch {
             try {
-                val trending = nflix.kkPhim.listByKind("phim-bo", page = 1, limit = 12)
+                val trending = nflix.mergedPhim.byKindMerged("phim-bo", page = 1, limit = 12)
                 db.titleDao().upsertAll(trending.map { it.toEntity() })
                 _state.update {
                     it.copy(loading = false, hero = trending.firstOrNull(), heroList = trending.take(8))
