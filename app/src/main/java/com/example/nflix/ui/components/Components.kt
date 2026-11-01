@@ -263,14 +263,28 @@ fun NewUnitsPill(seenCount: Int, latestCount: Int, unit: String, modifier: Modif
     }
 }
 
-/** Poster card 2:3 with the design's badges; optional progress bar (Xem tiếp). */
+/**
+ * Poster card 2:3 with the design's badges; optional progress bar (Xem tiếp).
+ *
+ * List-shelf design (user-approved mockup 2026-11-01): with [coverMeta] the
+ * card carries its "updated list" face on the cover itself — latest-unit
+ * badge bottom-start on a dark scrim, orange "+N" pill bottom-end when the
+ * caller supplies a real new count — and the line under the name reads
+ * "Tập N · x phút trước". Default (coverMeta = false, no counts) renders
+ * exactly the card every existing shelf/grid already shows.
+ */
 @Composable
 fun PosterCard(
     item: TitleItem,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     progressFraction: Float? = null,
-    progressLabel: String = ""
+    progressLabel: String = "",
+    coverMeta: Boolean = false,
+    newCount: Int = 0,
+    newSeen: Int = 0,
+    newLatest: Int = 0,
+    unit: String = "tập"
 ) {
     Column(modifier = modifier.clickable(onClick = onClick)) {
         Box(
@@ -293,6 +307,28 @@ fun PosterCard(
                 QualityBadge(item.quality, Modifier.align(Alignment.TopStart).padding(6.dp))
             }
             VersionBadge(item.versionBadge, Modifier.align(Alignment.TopEnd).padding(6.dp))
+            if (coverMeta && item.latestLabel.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .background(Color(0xC20D0D13), BadgeShape)
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        item.latestLabel,
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            if (newCount > 0) {
+                Box(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp)) {
+                    if (newSeen > 0 && newLatest > newSeen) NewUnitsPill(newSeen, newLatest, unit)
+                    else PlusPill(newCount, unit)
+                }
+            }
         }
         if (progressFraction != null) {
             Spacer(Modifier.height(5.dp))
@@ -314,7 +350,12 @@ fun PosterCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
-        val sub = progressLabel.ifBlank { item.latestLabel }
+        val sub = if (coverMeta && progressFraction == null) {
+            val time = item.updatedLabel.ifBlank { TimeText.relative(item.updatedEpochSec) }
+            listOf(item.latestLabel, time).filter { it.isNotBlank() }.joinToString(" · ")
+        } else {
+            progressLabel.ifBlank { item.latestLabel }
+        }
         if (sub.isNotBlank()) {
             Text(sub, color = NflixTextMuted, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
@@ -355,7 +396,11 @@ fun PosterShelf(
     modifier: Modifier = Modifier,
     cardWidth: Int = 112,
     actionLabel: String? = null,
-    onAction: (() -> Unit)? = null
+    onAction: (() -> Unit)? = null,
+    coverMeta: Boolean = false,
+    newCountOf: (TitleItem) -> Int = { 0 },
+    newRangeOf: (TitleItem) -> Pair<Int, Int>? = { null },
+    unitOf: (TitleItem) -> String = { "tập" }
 ) {
     if (items.isEmpty()) return
     Column(modifier = modifier) {
@@ -365,7 +410,17 @@ fun PosterShelf(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(items, key = { it.id }) { item ->
-                PosterCard(item = item, onClick = { onItemClick(item) }, modifier = Modifier.width(cardWidth.dp))
+                val range = newRangeOf(item)
+                PosterCard(
+                    item = item,
+                    onClick = { onItemClick(item) },
+                    modifier = Modifier.width(cardWidth.dp),
+                    coverMeta = coverMeta,
+                    newCount = newCountOf(item),
+                    newSeen = range?.first ?: 0,
+                    newLatest = range?.second ?: 0,
+                    unit = unitOf(item)
+                )
             }
         }
     }

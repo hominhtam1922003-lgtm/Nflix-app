@@ -3,6 +3,7 @@ package com.example.nflix.player
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
+import com.example.nflix.data.ProbeTarget
 import com.example.nflix.data.ServerProbe
 import com.example.nflix.data.ServerStatus
 import com.example.nflix.data.local.UserStateEntity
@@ -106,6 +107,8 @@ class PlayerViewModel(
                             true
                         }
                         if (auto) {
+                            // 1.1.1 (N3): typed targets like Detail — embed
+                            // pages are reported unmeasurable, never timed.
                             val statuses = ServerProbe.probeAll(
                                 detail.servers, episode.number
                             ) { ep ->
@@ -116,22 +119,30 @@ class PlayerViewModel(
                                                 val target = app.cobe.resolvePlay(ep.slug)
                                             ) {
                                                 is CobePlay.Hls ->
-                                                    target.url
+                                                    ProbeTarget.Stream(target.url)
                                                 is CobePlay.Embed ->
-                                                    target.url
+                                                    ProbeTarget.Embed(target.url)
                                             }
                                         } catch (e: Exception) {
-                                            ep.embedUrl.ifBlank { null }
+                                            ep.embedUrl.takeIf { it.isNotBlank() }
+                                                ?.let { ProbeTarget.Embed(it) }
+                                                ?: ProbeTarget.None
                                         }
                                     item.sourceId == "hhkungfu" -> try {
-                                        app.hhKungfu.resolveEmbed(
-                                            ep.slug,
-                                            prefer4k = item.quality.contains("4K")
+                                        ProbeTarget.Embed(
+                                            app.hhKungfu.resolveEmbed(
+                                                ep.slug,
+                                                prefer4k = item.quality.contains("4K")
+                                            )
                                         )
                                     } catch (e: Exception) {
-                                        null
+                                        ProbeTarget.None
                                     }
-                                    else -> ep.streamUrl.ifBlank { ep.embedUrl.ifBlank { null } }
+                                    ep.streamUrl.isNotBlank() ->
+                                        ProbeTarget.Stream(ep.streamUrl)
+                                    ep.embedUrl.isNotBlank() ->
+                                        ProbeTarget.Embed(ep.embedUrl)
+                                    else -> ProbeTarget.None
                                 }
                             }
                             _state.update { it.copy(serverStatuses = statuses) }

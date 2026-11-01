@@ -1,5 +1,6 @@
 package com.example.nflix.data.source
 
+import android.util.Log
 import com.example.nflix.data.SettingsStore
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.Family
@@ -44,6 +45,15 @@ class CobeSource(
     companion object {
         const val SOURCE_ID = "cobe"
         const val LOCATOR_PREFIX = "cobe:"
+        private const val TAG = "CobeSource"
+
+        /**
+         * 1.1.1 (N2): host rediscovery is expensive (home page + up to 40
+         * JS chunks). Its result — success OR failure — is cached for
+         * this long so a dead API host cannot make every Detail/Player/
+         * search pay the full scan again.
+         */
+        private const val DISCOVERY_TTL_MS = 10 * 60 * 1000L
 
         /** API host measured live 2026-11-01; rediscovery replaces it when it dies. */
         private const val FALLBACK_API_BASE =
@@ -95,6 +105,17 @@ class CobeSource(
     @Volatile
     private var apiBaseCache: String? = null
 
+    // Discovery cache (N2): the last discoverApiBase() outcome and when it
+    // was produced. A cached FAILURE is honored until the TTL expires too.
+    @Volatile
+    private var discoveryCachedAtMs: Long = 0L
+
+    @Volatile
+    private var discoveryCachedResult: String? = null
+
+    @Volatile
+    private var discoveryCached: Boolean = false
+
     private suspend fun apiBase(): String {
         apiBaseCache?.let { return it }
         val stored = try {
@@ -125,7 +146,8 @@ class CobeSource(
         try {
             return getText(base + path)
         } catch (e: Exception) {
-            val found = discoverApiBase()
+            Log.w(TAG, "Cobe API call failed ($path via $base): ${e.message}")
+            val found = discoverApiBaseCached()
             if (found != null && found != base) {
                 apiBaseCache = found
                 runCatching { settings?.setCobeApiHost(found) }
@@ -133,6 +155,19 @@ class CobeSource(
             }
             throw e
         }
+    }
+
+    /** discoverApiBase() behind the TTL cache — see DISCOVERY_TTL_MS (N2). */
+    private suspend fun discoverApiBaseCached(): String? {
+        val now = System.currentTimeMillis()
+        if (discoveryCached && now - discoveryCachedAtMs < DISCOVERY_TTL_MS) {
+            return discoveryCachedResult
+        }
+        val found = discoverApiBase()
+        discoveryCachedResult = found
+        discoveryCachedAtMs = System.currentTimeMillis()
+        discoveryCached = true
+        return found
     }
 
     private suspend fun getApiJson(path: String): JSONObject = JSONObject(getApiText(path))
@@ -153,6 +188,7 @@ class CobeSource(
             }
             null
         } catch (e: Exception) {
+            Log.w(TAG, "Cobe host discovery failed: ${e.message}")
             null
         }
     }
@@ -283,6 +319,7 @@ class CobeSource(
         val groups = try {
             fetchGroups(slug, movieId)
         } catch (e: Exception) {
+            Log.w(TAG, "Cobe episode list failed for slug=$slug: ${e.message}")
             emptyList()
         }
         // Released count = highest episode number really present on a
@@ -407,6 +444,7 @@ class CobeSource(
         val html = try {
             getText(watchUrl)
         } catch (e: Exception) {
+            Log.w(TAG, "Cobe watch page failed ($watchUrl): ${e.message}")
             return CobePlay.Embed(watchUrl)
         }
         val match = EPISODE_RSC.find(html) ?: EPISODE_RSC_LOOSE.find(html)

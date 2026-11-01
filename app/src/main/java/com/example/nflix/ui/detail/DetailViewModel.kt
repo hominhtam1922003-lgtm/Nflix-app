@@ -8,6 +8,7 @@ import com.example.nflix.data.local.watchedSet
 import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.Family
+import com.example.nflix.data.ProbeTarget
 import com.example.nflix.data.ServerProbe
 import com.example.nflix.data.ServerStatus
 import com.example.nflix.data.model.ServerGroup
@@ -163,7 +164,7 @@ class DetailViewModel(
         _state.update { it.copy(probingServers = true) }
         viewModelScope.launch {
             val target = resumeUnit()?.number ?: 0f
-            val statuses = ServerProbe.probeAll(detail.servers, target) { ep -> probeUrl(ep) }
+            val statuses = ServerProbe.probeAll(detail.servers, target) { ep -> probeTarget(ep) }
             _state.update { s ->
                 var idx = s.serverIndex
                 if (autoSelect && autoFastest && !userPickedServer) {
@@ -177,27 +178,40 @@ class DetailViewModel(
         }
     }
 
-    /** The URL worth timing for one episode (Donghua resolves its embed iframe). */
-    private suspend fun probeUrl(ep: EpisodeItem): String? =
+    /**
+     * The typed probe target for one episode (1.1.1, N3). Only a direct
+     * stream is measurable; anything that resolves to a web embed page is
+     * [ProbeTarget.Embed] — the probe reports it as unmeasurable and the
+     * auto-fastest pick can never select it (a fast-loading embed page
+     * used to beat real streams while its stream inside was dead).
+     */
+    private suspend fun probeTarget(ep: EpisodeItem): ProbeTarget =
         if (CobeSource.isLocator(ep.slug)) {
-            // Đợt 4: timing a cobe server means resolving its play link —
-            // the resolve time counts into the measurement, like Donghua.
+            // Đợt 4: a cobe server is probed through its resolved play
+            // link — HLS targets are timed for real, embeds are not timed
+            // at all anymore (N3).
             try {
                 when (val target = app.cobe.resolvePlay(ep.slug)) {
-                    is CobePlay.Hls -> target.url
-                    is CobePlay.Embed -> target.url
+                    is CobePlay.Hls -> ProbeTarget.Stream(target.url)
+                    is CobePlay.Embed -> ProbeTarget.Embed(target.url)
                 }
             } catch (e: Exception) {
-                ep.embedUrl.ifBlank { null }
+                ep.embedUrl.takeIf { it.isNotBlank() }
+                    ?.let { ProbeTarget.Embed(it) } ?: ProbeTarget.None
             }
         } else if (item.sourceId == "hhkungfu" || item.family == Family.DONGHUA) {
+            // Donghua plays through an embed iframe — same rule as cobe's.
             try {
-                app.hhKungfu.resolveEmbed(ep.slug)
+                ProbeTarget.Embed(app.hhKungfu.resolveEmbed(ep.slug))
             } catch (e: Exception) {
-                null
+                ProbeTarget.None
             }
         } else {
-            ep.streamUrl.ifBlank { ep.embedUrl.ifBlank { null } }
+            when {
+                ep.streamUrl.isNotBlank() -> ProbeTarget.Stream(ep.streamUrl)
+                ep.embedUrl.isNotBlank() -> ProbeTarget.Embed(ep.embedUrl)
+                else -> ProbeTarget.None
+            }
         }
 
     /** A2: load the "Cùng thể loại" shelf from the title's first genre. */

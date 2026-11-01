@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -56,6 +57,7 @@ import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.source.KkPhimSource
 import com.example.nflix.ui.components.ContextChips
 import com.example.nflix.ui.components.FilterChips
+import com.example.nflix.ui.components.PosterCard
 import com.example.nflix.ui.components.PosterShelf
 import com.example.nflix.ui.components.SectionHeader
 import com.example.nflix.ui.components.UpdatedRow
@@ -153,13 +155,26 @@ fun FamilyScreen(
             return
         }
         "rows" -> {
+            // List-shelf design (approved 2026-11-01): the families' main
+            // browse list is a 3-column poster grid now — same rows data,
+            // same load-more pagination, "+N" pills fed by the same
+            // newEntries/newRanges the bell list uses.
             TitleListScreen(
                 title = "Mới cập nhật",
                 items = state.rows,
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
                 modifier = modifier,
-                onLoadMore = { viewModel.loadMoreRows() }
+                newCountOf = { item ->
+                    state.newEntries.firstOrNull { it.first.id == item.id }?.second ?: 0
+                },
+                unitOf = { it.family.unitWord() },
+                newRangeOf = { item ->
+                    state.newRanges[item.id]?.takeIf { it.first > 0 }
+                },
+                onOpenFirstNew = onOpenFirstNew,
+                onLoadMore = { viewModel.loadMoreRows() },
+                gridMode = true
             )
             return
         }
@@ -427,7 +442,10 @@ fun FamilyScreen(
             }
         }
 
-        // Rows shelf — "Mới cập nhật" (all families, Donghua included)
+        // "Mới cập nhật" preview — list-shelf design (approved 2026-11-01):
+        // the vertical small-cover rows are gone; the preview is the same
+        // 3-column poster grid as the full list, chunked into rows because
+        // this tab's body is a LazyColumn. Same 8 items as before.
         if (state.rows.isNotEmpty()) {
             item {
                 SectionHeader(
@@ -436,8 +454,27 @@ fun FamilyScreen(
                     onAction = { showAll = "rows" }
                 )
             }
-            items(state.rows.take(8), key = { it.id }) { item ->
-                UpdatedRow(item = item, onClick = { onOpenTitle(item) })
+            items(state.rows.take(8).chunked(3), key = { chunk -> chunk.first().id }) { chunk ->
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    chunk.forEach { rowItem ->
+                        PosterCard(
+                            item = rowItem,
+                            onClick = { onOpenTitle(rowItem) },
+                            modifier = Modifier.weight(1f),
+                            coverMeta = true,
+                            newCount = state.newEntries
+                                .firstOrNull { it.first.id == rowItem.id }?.second ?: 0,
+                            newSeen = state.newRanges[rowItem.id]?.first ?: 0,
+                            newLatest = state.newRanges[rowItem.id]?.second ?: 0,
+                            unit = rowItem.family.unitWord()
+                        )
+                    }
+                    repeat(3 - chunk.size) { Spacer(Modifier.weight(1f)) }
+                }
             }
         }
 

@@ -50,7 +50,6 @@ import com.example.nflix.data.model.TitleItem
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.components.PosterCard
 import com.example.nflix.ui.components.SectionHeader
-import com.example.nflix.ui.components.UpdatedRow
 import com.example.nflix.ui.common.TitleGridScreen
 import com.example.nflix.ui.common.TitleListScreen
 import com.example.nflix.ui.theme.NflixBackground
@@ -117,12 +116,15 @@ fun HomeScreen(
             return
         }
         "latest" -> {
+            // List-shelf design (approved 2026-11-01): the full "Mới nhất"
+            // list opens as the 3-column poster grid, like the tabs.
             TitleListScreen(
                 title = "Mới nhất",
                 items = state.latestList,
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
-                modifier = modifier
+                modifier = modifier,
+                gridMode = true
             )
             return
         }
@@ -285,17 +287,19 @@ fun HomeScreen(
                         onAction = { showAll = "suggested" }
                     )
                 }
+                // List-shelf design (approved 2026-11-01): "Mới nhất" is a
+                // poster shelf like every other Home shelf — the vertical
+                // small-cover rows the user called out are gone.
                 "latest" -> if (state.latestList.isNotEmpty()) {
-                    Column {
-                        SectionHeader(
-                            "Mới nhất",
-                            actionLabel = "Xem tất cả",
-                            onAction = { showAll = "latest" }
-                        )
-                        state.latestList.take(8).forEach { item ->
-                            UpdatedRow(item = item, onClick = { onOpenTitle(item) })
-                        }
-                    }
+                    com.example.nflix.ui.components.PosterShelf(
+                        title = "Mới nhất",
+                        items = state.latestList.take(8),
+                        onItemClick = onOpenTitle,
+                        modifier = Modifier.padding(top = 6.dp),
+                        actionLabel = "Xem tất cả",
+                        onAction = { showAll = "latest" },
+                        coverMeta = true
+                    )
                 }
             }
         }

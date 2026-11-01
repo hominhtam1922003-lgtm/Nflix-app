@@ -2,14 +2,20 @@ package com.example.nflix.ui.common
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -24,11 +30,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.nflix.R
 import com.example.nflix.data.model.TitleItem
+import com.example.nflix.ui.components.PosterCard
 import com.example.nflix.ui.components.UpdatedRow
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixTextMuted
 
-/** Full-screen row list — "Xem tất cả" for row shelves (Mới nhất, Có tập mới, lịch phát sóng). */
+/**
+ * Full-screen list — "Xem tất cả" for shelves (Mới nhất, Có tập mới, lịch
+ * phát sóng). Default stays the row list; [gridMode] switches the body to
+ * the approved 3-column poster grid (list-shelf design 2026-11-01) for the
+ * surfaces the user picked — same data, same click routing, same
+ * load-more, only the presentation changes.
+ */
 @Composable
 fun TitleListScreen(
     title: String,
@@ -40,7 +53,8 @@ fun TitleListScreen(
     unitOf: (TitleItem) -> String = { "tập" },
     newRangeOf: (TitleItem) -> Pair<Int, Int>? = { null },
     onOpenFirstNew: ((TitleItem) -> Unit)? = null,
-    onLoadMore: (() -> Unit)? = null
+    onLoadMore: (() -> Unit)? = null,
+    gridMode: Boolean = false
 ) {
     BackHandler(onBack = onBack)
     Column(modifier = modifier.fillMaxSize().background(NflixBackground)) {
@@ -72,6 +86,42 @@ fun TitleListScreen(
         if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("Chưa có gì ở đây", color = NflixTextMuted, fontSize = 14.sp)
+            }
+        } else if (gridMode) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                gridItems(items, key = { it.id }) { item ->
+                    val range = newRangeOf(item)
+                    PosterCard(
+                        item = item,
+                        // Same routing as the row form: a title with
+                        // unseen new units jumps to the first new one.
+                        onClick = {
+                            if (newCountOf(item) > 0 && onOpenFirstNew != null) {
+                                onOpenFirstNew(item)
+                            } else {
+                                onOpenTitle(item)
+                            }
+                        },
+                        coverMeta = true,
+                        newCount = newCountOf(item),
+                        newSeen = range?.first ?: 0,
+                        newLatest = range?.second ?: 0,
+                        unit = unitOf(item)
+                    )
+                }
+                if (onLoadMore != null) {
+                    item(key = "load_more", span = { GridItemSpan(3) }) {
+                        androidx.compose.runtime.LaunchedEffect(items.size) {
+                            onLoadMore()
+                        }
+                    }
+                }
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {

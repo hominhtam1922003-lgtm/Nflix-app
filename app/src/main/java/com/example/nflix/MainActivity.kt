@@ -2,9 +2,13 @@ package com.example.nflix
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,6 +62,22 @@ import com.example.nflix.ui.theme.NflixVioletSoft
 
 private data class TabSpec(val label: String, val iconRes: Int)
 
+/**
+ * 1.1.1 (N4): THE default-server rule, shared by every quick-play entry
+ * point — the same rule Detail applies (DetailViewModel): the pool's
+ * first Thuyết Minh group when one exists, else the first group in pool
+ * order; the remaining groups follow in pool order. Quick-play paths
+ * used to pick "the fullest server by episode count", which steered
+ * playback into whichever source padded its list most — often a cobe
+ * "#1" embed — instead of the default the Detail screen would show.
+ */
+private fun defaultServerOrder(servers: List<ServerGroup>): List<ServerGroup> {
+    if (servers.size <= 1) return servers
+    val idx = servers.indexOfFirst { it.langKey == "tm" }.takeIf { it >= 0 } ?: 0
+    if (idx == 0) return servers
+    return listOf(servers[idx]) + servers.filterIndexed { i, _ -> i != idx }
+}
+
 // 4 tabs (user orders 2026-11-01): Khám phá removed (5 tabs squeezed the
 // bar until labels wrapped), then Tìm kiếm removed — the header search icon
 // opens the Search screen as an overlay; its slot became "Top" (BXH).
@@ -71,6 +91,7 @@ private val TABS = listOf(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        hideSystemBars()
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -92,9 +113,40 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             NflixTheme {
-                NflixShell()
+                // Fullscreen compensation: with the status bar hidden the
+                // headers lose the breathing room it used to give them, so
+                // the whole shell keeps a fixed top inset instead — no
+                // header glued to the top edge or the camera cutout.
+                Box(modifier = Modifier.fillMaxSize().padding(top = 12.dp)) {
+                    NflixShell()
+                }
             }
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
+    /**
+     * Fullscreen shell (user order 2026-11-01): both system bars hidden,
+     * immersive-sticky — a swipe from the edge brings them back briefly
+     * and they hide themselves again. Content draws into the cutout area
+     * (SHORT_EDGES) so the fullscreen is real, same as PlayerActivity.
+     */
+    private fun hideSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
     }
 }
 
@@ -173,9 +225,9 @@ private fun NflixShell() {
                         if (chapter != null) readChapter(item, chapter) else openTitle(item)
                     }
                     else -> {
-                        val server = detail.servers.maxByOrNull { g ->
-                            g.episodes.maxOfOrNull { it.number } ?: 0f
-                        } ?: detail.servers.firstOrNull()
+                        // N4: default server by the shared rule, newest
+                        // episode OF THAT server (unchanged behavior).
+                        val server = defaultServerOrder(detail.servers).firstOrNull()
                         val episode = server?.episodes?.maxByOrNull { it.number }
                         if (server != null && episode != null) playVideo(item, episode, server)
                         else openTitle(item)
@@ -214,7 +266,9 @@ private fun NflixShell() {
                     }
                     else -> {
                         var played = false
-                        val servers = detail.servers.sortedByDescending { it.episodes.size }
+                        // N4: try servers in the shared default order
+                        // (Detail's rule), not by episode-count size.
+                        val servers = defaultServerOrder(detail.servers)
                         for (server in servers) {
                             val ascending = server.episodes.sortedBy { it.number }
                             val episode = ascending.drop(seen).firstOrNull { it.number !in watched }

@@ -341,6 +341,20 @@ fun DetailScreen(
                                 modifier = Modifier.clickable { showServerSheet = true }
                             )
                         }
+                        // 1.1.1 (N1): when the CobePhim source itself was
+                        // unreachable, say so right under the server bar —
+                        // the merged detail silently fell back to KKPhim
+                        // only, and the user could not tell a whole source
+                        // was missing. Informational only; nothing blocked.
+                        if (detail?.cobeFailed == true) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Nguồn Cobe: không kết nối được",
+                                color = NflixAmber,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
                     }
 
                     Spacer(Modifier.height(18.dp))

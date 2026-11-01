@@ -62,5 +62,10 @@ data class TitleDetail(
     val servers: List<ServerGroup> = emptyList(),   // video families
     val chapters: List<ChapterItem> = emptyList(),  // comic families
     val trailerUrl: String = "",                    // YouTube trailer (KKPhim trailer_url), "" when none
-    val genreLinks: List<Pair<String, String>> = emptyList() // (label, slug) — powers "Cùng thể loại"
+    val genreLinks: List<Pair<String, String>> = emptyList(), // (label, slug) — powers "Cùng thể loại"
+    // 1.1.1 (N1): true when the merged front TRIED CobePhim for this title
+    // and the source itself was unreachable (not merely "does not carry
+    // it"). The Detail screen must say so out loud — a dead source used to
+    // vanish silently, leaving the user staring at one KKPhim server.
+    val cobeFailed: Boolean = false
 )

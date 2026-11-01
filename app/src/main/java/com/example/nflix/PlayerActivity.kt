@@ -4,6 +4,9 @@ import android.app.PictureInPictureParams
 import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.util.Rational
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -121,6 +124,14 @@ class PlayerActivity : ComponentActivity() {
     /** True fullscreen: no status/navigation bars eating the top of the video. */
     private fun hideSystemBars() {
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Synced with MainActivity: draw into the cutout area too, so the
+        // video is not letterboxed by a punch-hole camera in landscape.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         val controller = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
         controller.systemBarsBehavior =
             androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -173,7 +184,7 @@ private fun PlayerScreen(
     val settings by app.settings.flow.collectAsState(initial = AppSettings())
 
     if (state.kind == PlaybackKind.EMBED) {
-        EmbedPlayer(state = state, onBack = onBack)
+        EmbedPlayer(state = state, viewModel = viewModel, onBack = onBack)
         return
     }
 
@@ -635,8 +646,23 @@ private fun PlayerScreen(
 }
 
 @Composable
-private fun EmbedPlayer(state: PlayerUiState, onBack: () -> Unit) {
+private fun EmbedPlayer(
+    state: PlayerUiState,
+    viewModel: PlayerViewModel,
+    onBack: () -> Unit
+) {
     val context = LocalContext.current
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    // 1.1.1 (N5): a dead embed used to be a dead end — the page's own
+    // "Setup error" (or a blank frame) just sat there. Main-frame load
+    // failures now raise the same recovery overlay as the stream branch:
+    // retry, switch server, report. Sub-resource errors (ad images, XHR
+    // inside the page) must NOT trigger it — isForMainFrame guards that.
+    var embedError by remember(state.embedUrl) { mutableStateOf<String?>(null) }
+    var showServers by remember { mutableStateOf(false) }
+    var reportSaved by remember(state.embedUrl) { mutableStateOf(false) }
+    val embedScope = androidx.compose.runtime.rememberCoroutineScope()
+    val servers = state.detail?.servers ?: emptyList()
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (state.embedUrl.isNotBlank()) {
             AndroidView(
@@ -645,7 +671,29 @@ private fun EmbedPlayer(state: PlayerUiState, onBack: () -> Unit) {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
-                        webViewClient = WebViewClient()
+                        webViewClient = object : WebViewClient() {
+                            override fun onReceivedError(
+                                view: WebView?,
+                                request: WebResourceRequest?,
+                                error: WebResourceError?
+                            ) {
+                                if (request?.isForMainFrame == true) {
+                                    embedError = "Không tải được trang phát của server này. Hãy thử lại hoặc đổi server."
+                                }
+                            }
+
+                            override fun onReceivedHttpError(
+                                view: WebView?,
+                                request: WebResourceRequest?,
+                                errorResponse: WebResourceResponse?
+                            ) {
+                                if (request?.isForMainFrame == true) {
+                                    val code = errorResponse?.statusCode ?: 0
+                                    embedError = "Server embed trả lỗi HTTP $code. Hãy thử lại hoặc đổi server."
+                                }
+                            }
+                        }
+                        webView = this
                         loadUrl(state.embedUrl)
                     }
                 },
@@ -682,7 +730,7 @@ private fun EmbedPlayer(state: PlayerUiState, onBack: () -> Unit) {
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     state.item?.name ?: "",
                     color = Color.White,
@@ -696,8 +744,21 @@ private fun EmbedPlayer(state: PlayerUiState, onBack: () -> Unit) {
                     fontSize = 12.sp
                 )
             }
+            // Server escape hatch right in embed mode (N5): pages that
+            // load "successfully" but show their own error text inside
+            // raise no WebView error — the user still needs a way out.
+            if (servers.size > 1) {
+                Text(
+                    "Đổi server",
+                    color = NflixViolet,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { showServers = true }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
         }
-        if (state.error.isNotBlank()) {
+        if (state.error.isNotBlank() && embedError == null) {
             Text(
                 state.error,
                 color = Color.White,
@@ -705,6 +766,83 @@ private fun EmbedPlayer(state: PlayerUiState, onBack: () -> Unit) {
                 modifier = Modifier.align(Alignment.Center).padding(32.dp)
             )
         }
+        // Main-frame embed failure — same recovery shape as the stream
+        // branch's error card (Thử lại · Đổi server · Báo lỗi này).
+        if (embedError != null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(32.dp)
+                    .background(Color(0xCC000000), RoundedCornerShape(16.dp))
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(embedError!!, color = Color.White, fontSize = 14.sp)
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Thử lại",
+                        color = NflixViolet,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable {
+                            embedError = null
+                            webView?.reload()
+                        }
+                    )
+                    if (servers.size > 1) {
+                        Spacer(Modifier.width(20.dp))
+                        Text(
+                            "Đổi server",
+                            color = NflixViolet,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable { showServers = true }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (reportSaved) "Đã ghi báo lỗi ✓" else "Báo lỗi này",
+                    color = if (reportSaved) NflixGreen else Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.clickable(enabled = !reportSaved) {
+                        val errorText = embedError ?: ""
+                        embedScope.launch {
+                            withContext(Dispatchers.IO) {
+                                com.example.nflix.data.ReportStore.add(
+                                    context,
+                                    com.example.nflix.data.ErrorReport(
+                                        timeEpochSec = System.currentTimeMillis() / 1000,
+                                        family = state.item?.family?.name ?: "",
+                                        titleId = state.item?.id ?: "",
+                                        titleName = state.item?.name ?: "",
+                                        unitLabel = state.episode?.label ?: "",
+                                        server = servers.getOrNull(state.serverIndex)?.name ?: "",
+                                        message = errorText
+                                    )
+                                )
+                            }
+                            reportSaved = true
+                        }
+                    }
+                )
+            }
+        }
+    }
+    if (showServers) {
+        ServerSheet(
+            servers = servers,
+            selectedIndex = state.serverIndex,
+            onSelect = { idx ->
+                showServers = false
+                embedError = null
+                viewModel.switchServer(idx, 0)
+            },
+            onDismiss = { showServers = false },
+            serverStatuses = state.serverStatuses
+        )
     }
     DisposableEffect(Unit) {
         onDispose { /* WebView is destroyed with the view tree */ }
