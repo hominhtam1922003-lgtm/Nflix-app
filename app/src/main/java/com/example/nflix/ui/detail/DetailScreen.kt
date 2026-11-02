@@ -485,8 +485,17 @@ fun DetailScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
                     )
                 } else if (visible.isEmpty()) {
+                    // 1.3.1: say WHAT actually happened — the real load
+                    // error when the detail call failed, the source's
+                    // own load note when it loaded abnormally (Donghua
+                    // fallback/empty), the generic line only otherwise.
                     Text(
-                        "Chưa lấy được danh sách — kiểm tra mạng rồi mở lại.",
+                        when {
+                            state.detailError != null ->
+                                "Không tải được chi tiết: ${state.detailError}"
+                            state.loadNote.isNotBlank() -> state.loadNote
+                            else -> "Chưa lấy được danh sách — kiểm tra mạng rồi mở lại."
+                        },
                         color = NflixTextMuted,
                         fontSize = 13.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)

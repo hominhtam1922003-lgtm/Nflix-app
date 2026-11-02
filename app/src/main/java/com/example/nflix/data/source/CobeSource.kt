@@ -432,23 +432,42 @@ class CobeSource(
 
     /**
      * V2 (A5): an actor's filmography from the Cobe WEB actor page
-     * (/dien-vien/<slug>, measured live: HTTP 200, the RSC payload
-     * embeds the actor's titles as regular "item" records — the same
-     * extraction the listing pages use). The pure API person endpoints
-     * are dead (404/401), so the web page is the only path. A slug the
-     * site does not know 404s out of getText — the caller shows an
-     * honest empty/error state, never a dead link.
+     * (/dien-vien/<slug>). The pure API person endpoints are dead
+     * (404/401), so the web page is the only path. A slug the site
+     * does not know 404s out of getText — the caller shows an honest
+     * empty/error state, never a dead link.
+     *
+     * 1.3.1 fix: the page does NOT embed listing-style "item" records
+     * (measured live 2026-11-01: the whole page carries two "item"
+     * strings), so the old extractItemJson path returned ZERO titles
+     * and every actor page rendered empty. The filmography actually
+     * rides the person object itself as a "movies":[...] array of
+     * FULL by-slug records (poster/thumbnail/categories/publish_year
+     * all present) — [extractPersonMovies] reads that array and
+     * [parseItem] consumes the records unchanged. The "item"
+     * extraction survives only as a fallback if the payload shape
+     * ever changes back.
      */
     suspend fun actorPage(slug: String): CobeActorPage {
         val html = getText("$webBase/dien-vien/$slug")
-        val items = extractItemJson(html)
-            .filter { it.optString("slug").isNotBlank() }
-            .map { parseItem(it, Family.PHIM) }
-            .distinctBy { it.slug }
+        val decoded = decodeRscLayer(html)
+        val personMovies = extractPersonMovies(decoded)
+        val items = if (personMovies.isNotEmpty()) {
+            personMovies
+                .filter {
+                    it.optString("slug").isNotBlank() && it.optString("name").isNotBlank()
+                }
+                .map { parseItem(it, Family.PHIM) }
+                .distinctBy { it.slug }
+        } else {
+            extractItemJson(html)
+                .filter { it.optString("slug").isNotBlank() }
+                .map { parseItem(it, Family.PHIM) }
+                .distinctBy { it.slug }
+        }
         // The person object rides the same payload ({name, slug,
         // thumbnail} in some order); recover name/thumb when present,
         // else humanize the slug — the filmography is the point.
-        val decoded = decodeRscLayer(html)
         val name = findPersonField(decoded, slug, "name")
             ?: slug.split("-").filter { it.isNotBlank() }
                 .joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
@@ -625,6 +644,62 @@ class CobeSource(
                     '"' -> inString = true
                     '{' -> depth++
                     '}' -> {
+                        depth--
+                        if (depth == 0) return text.substring(start, i + 1)
+                    }
+                }
+            }
+            i++
+        }
+        return null
+    }
+
+    /**
+     * 1.3.1: the elements of the person object's "movies":[...] array
+     * on a /dien-vien/<slug> page, from ALREADY [decodeRscLayer]-
+     * decoded text. The person object is anchored by its "other_name"
+     * field and the page carries exactly one such array (measured
+     * 2026-11-01), so the first "movies" array in the payload is the
+     * filmography. Each element is captured with the same string-aware
+     * balance scan as [captureObject]; a malformed element is skipped,
+     * never fatal.
+     */
+    private fun extractPersonMovies(decoded: String): List<JSONObject> {
+        val arrStart = decoded.indexOf("\"movies\":[")
+        if (arrStart < 0) return emptyList()
+        val start = arrStart + "\"movies\":".length
+        val arr = captureArray(decoded, start) ?: return emptyList()
+        val out = mutableListOf<JSONObject>()
+        var from = 0
+        while (true) {
+            val idx = arr.indexOf('{', from)
+            if (idx < 0) break
+            val obj = captureObject(arr, idx) ?: break
+            from = idx + obj.length
+            runCatching { JSONObject(obj) }.getOrNull()?.let { out.add(it) }
+        }
+        return out
+    }
+
+    /** String-aware balanced [...] capture starting at [start] (which must be '['). */
+    private fun captureArray(text: String, start: Int): String? {
+        if (start >= text.length || text[start] != '[') return null
+        var depth = 0
+        var inString = false
+        var i = start
+        while (i < text.length) {
+            val c = text[i]
+            if (inString) {
+                if (c == '\\') {
+                    i += 2
+                    continue
+                }
+                if (c == '"') inString = false
+            } else {
+                when (c) {
+                    '"' -> inString = true
+                    '[' -> depth++
+                    ']' -> {
                         depth--
                         if (depth == 0) return text.substring(start, i + 1)
                     }

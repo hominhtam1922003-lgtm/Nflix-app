@@ -54,7 +54,15 @@ data class DetailUiState(
      * V2 (0.2): server index the settings' version priority prefers —
      * the server sheet marks it "Mặc định theo ưu tiên của bạn".
      */
-    val preferredServerIndex: Int = -1
+    val preferredServerIndex: Int = -1,
+    /**
+     * 1.3.1: the REAL detail-load failure ("HTTP 404", the exception's
+     * own message) — the screen shows it verbatim instead of the
+     * generic "check your network" line.
+     */
+    val detailError: String? = null,
+    /** 1.3.1: the source adapter's own load note (TitleDetail.loadNote). */
+    val loadNote: String = ""
 )
 
 class DetailViewModel(
@@ -127,7 +135,8 @@ class DetailViewModel(
                         loading = false,
                         detail = detail,
                         serverIndex = preferred,
-                        preferredServerIndex = preferred
+                        preferredServerIndex = preferred,
+                        loadNote = detail.loadNote
                     )
                 }
                 // 0.1/0.2: when the "Tự chọn server sống nhanh nhất" setting
@@ -167,8 +176,22 @@ class DetailViewModel(
                     }
                 }
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false) }
+                _state.update { it.copy(loading = false, detailError = shortError(e)) }
             }
+        }
+    }
+
+    /**
+     * 1.3.1: short human line for a load failure — the HTTP code when
+     * the adapter reported one (its message carries it, sometimes with
+     * a URL tail that is trimmed), else the exception's own message.
+     */
+    private fun shortError(e: Exception): String {
+        val msg = e.message?.trim().orEmpty()
+        return when {
+            msg.contains("HTTP") -> msg.substringBefore(" (").take(80)
+            msg.isNotBlank() -> msg.take(80)
+            else -> e.javaClass.simpleName
         }
     }
 

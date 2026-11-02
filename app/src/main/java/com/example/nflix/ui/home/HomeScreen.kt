@@ -53,6 +53,7 @@ import com.example.nflix.ui.components.SectionHeader
 import com.example.nflix.ui.common.TitleGridScreen
 import com.example.nflix.ui.common.TitleListScreen
 import com.example.nflix.ui.theme.NflixBackground
+import com.example.nflix.ui.theme.NflixBlue
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
 import com.example.nflix.ui.theme.NflixViolet
@@ -173,6 +174,7 @@ fun HomeScreen(
             item {
                 HeroCarousel(
                     items = state.heroList,
+                    watchLaterIds = state.watchLaterIds,
                     onWatchNow = onPlayDirect,
                     onWatchLater = { viewModel.toggleWatchLater(it) }
                 )
@@ -354,6 +356,7 @@ fun HomeScreen(
 @Composable
 private fun HeroCarousel(
     items: List<TitleItem>,
+    watchLaterIds: Set<String>,
     onWatchNow: (TitleItem) -> Unit,
     onWatchLater: (TitleItem) -> Unit
 ) {
@@ -376,6 +379,7 @@ private fun HeroCarousel(
             val heroItem = items[page]
             HeroCard(
                 item = heroItem,
+                watchLaterActive = heroItem.id in watchLaterIds,
                 onWatchNow = { onWatchNow(heroItem) },
                 onWatchLater = { onWatchLater(heroItem) }
             )
@@ -404,7 +408,12 @@ private fun HeroCarousel(
 }
 
 @Composable
-private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -> Unit) {
+private fun HeroCard(
+    item: TitleItem,
+    watchLaterActive: Boolean,
+    onWatchNow: () -> Unit,
+    onWatchLater: () -> Unit
+) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -482,9 +491,25 @@ private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -
                     Text("Xem ngay", color = Color.White, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.width(10.dp))
+                // 1.3.1: reflect the saved state exactly like Detail's
+                // Xem sau tile (NflixBlue accent) — before this the tap
+                // toggled Room silently and the button never changed,
+                // so it read as dead. Saved = accent fill + border +
+                // "Đã lưu"; unsaved = the original quiet pill.
                 Button(
                     onClick = onWatchLater,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (watchLaterActive) {
+                            NflixBlue.copy(alpha = 0.55f)
+                        } else {
+                            Color(0x33FFFFFF)
+                        }
+                    ),
+                    border = if (watchLaterActive) {
+                        androidx.compose.foundation.BorderStroke(1.dp, NflixBlue)
+                    } else {
+                        null
+                    },
                     shape = RoundedCornerShape(50)
                 ) {
                     Icon(
@@ -494,7 +519,7 @@ private fun HeroCard(item: TitleItem, onWatchNow: () -> Unit, onWatchLater: () -
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(Modifier.width(6.dp))
-                    Text("Xem sau", color = Color.White)
+                    Text(if (watchLaterActive) "Đã lưu" else "Xem sau", color = Color.White)
                 }
             }
         }

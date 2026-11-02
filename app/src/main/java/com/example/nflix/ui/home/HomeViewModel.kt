@@ -48,7 +48,15 @@ data class HomeUiState(
     /** V2 (A3): Cobe editorial collections for the "Bộ sưu tập" shelf. */
     val collections: List<com.example.nflix.data.source.CobeCollection> = emptyList(),
     /** The collection whose grid is open (set when its card is tapped). */
-    val selectedCollection: com.example.nflix.data.source.CobeCollection? = null
+    val selectedCollection: com.example.nflix.data.source.CobeCollection? = null,
+    /**
+     * 1.3.1: ids of the titles currently flagged Xem sau. The hero's
+     * "Xem sau" button reads this to show its saved state — before
+     * this, the button wrote to Room on tap but never changed on
+     * screen, so it read as a dead button. Detail's toggle tile has
+     * always reflected the same flag.
+     */
+    val watchLaterIds: Set<String> = emptySet()
 )
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -86,6 +94,15 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             continueFlow().collect { list -> _state.update { it.copy(continueList = list) } }
+        }
+        // 1.3.1: keep the hero's Xem sau state live from the same DAO
+        // flow My Page reads — toggling anywhere reflects everywhere.
+        viewModelScope.launch {
+            db.userStateDao().watchLater().collect { rows ->
+                _state.update {
+                    it.copy(watchLaterIds = rows.map { row -> row.titleId }.toSet())
+                }
+            }
         }
     }
 

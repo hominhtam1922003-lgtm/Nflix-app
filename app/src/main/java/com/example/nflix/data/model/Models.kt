@@ -129,5 +129,14 @@ data class TitleDetail(
     // and the source itself was unreachable (not merely "does not carry
     // it"). The Detail screen must say so out loud — a dead source used to
     // vanish silently, leaving the user staring at one KKPhim server.
-    val cobeFailed: Boolean = false
+    val cobeFailed: Boolean = false,
+    /**
+     * 1.3.1: honest load note from the source adapter — set when the
+     * detail was recovered through a fallback path, or when the page
+     * loaded but yielded no units at all (Donghua). The Detail screen
+     * shows it verbatim instead of the generic "check your network"
+     * line. Empty = the load was normal; sources that never set it
+     * behave exactly as before.
+     */
+    val loadNote: String = ""
 )

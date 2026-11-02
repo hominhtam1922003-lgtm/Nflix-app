@@ -38,7 +38,14 @@ data class PlayerUiState(
     val userState: UserStateEntity? = null,
     val error: String = "",
     /** Last real per-server measurement for the server sheet (0.1/0.2). */
-    val serverStatuses: Map<Int, ServerStatus> = emptyMap()
+    val serverStatuses: Map<Int, ServerStatus> = emptyMap(),
+    /**
+     * 1.3.1: Referer header for the embed WebView — Donghua ONLY (the
+     * source watch-page URL of the episode being played, so the embed
+     * host sees the same request shape the site's own page produces).
+     * Null for every other family: their embed loading is untouched.
+     */
+    val embedReferer: String? = null
 )
 
 class PlayerViewModel(
@@ -176,7 +183,8 @@ class PlayerViewModel(
                                 loading = false,
                                 episode = episode.copy(streamUrl = target.url),
                                 kind = PlaybackKind.STREAM,
-                                embedUrl = ""
+                                embedUrl = "",
+                                embedReferer = null
                             )
                         }
                         is CobePlay.Embed -> _state.update {
@@ -184,7 +192,8 @@ class PlayerViewModel(
                                 loading = false,
                                 episode = episode.copy(embedUrl = target.url),
                                 kind = PlaybackKind.EMBED,
-                                embedUrl = target.url
+                                embedUrl = target.url,
+                                embedReferer = null
                             )
                         }
                     }
@@ -195,7 +204,8 @@ class PlayerViewModel(
                                 loading = false,
                                 episode = episode,
                                 kind = PlaybackKind.EMBED,
-                                embedUrl = episode.embedUrl
+                                embedUrl = episode.embedUrl,
+                                embedReferer = null
                             )
                         }
                     } else {
@@ -210,7 +220,10 @@ class PlayerViewModel(
                 }
             }
             episode.streamUrl.isNotBlank() -> _state.update {
-                it.copy(loading = false, episode = episode, kind = PlaybackKind.STREAM, embedUrl = "")
+                it.copy(
+                    loading = false, episode = episode, kind = PlaybackKind.STREAM,
+                    embedUrl = "", embedReferer = null
+                )
             }
             item.sourceId == "hhkungfu" -> {
                 try {
@@ -219,7 +232,13 @@ class PlayerViewModel(
                     val variant = server()?.variantKey.orEmpty()
                     val embed = app.hhKungfu.resolveEmbed(episode.slug, variant)
                     _state.update {
-                        it.copy(loading = false, episode = episode, kind = PlaybackKind.EMBED, embedUrl = embed)
+                        it.copy(
+                            loading = false, episode = episode, kind = PlaybackKind.EMBED,
+                            embedUrl = embed,
+                            // 1.3.1: the embed loads with the source's
+                            // own watch page as Referer.
+                            embedReferer = donghuaWatchReferer(item.slug, episode.slug)
+                        )
                     }
                 } catch (e: Exception) {
                     _state.update {
@@ -228,7 +247,10 @@ class PlayerViewModel(
                 }
             }
             episode.embedUrl.isNotBlank() -> _state.update {
-                it.copy(loading = false, episode = episode, kind = PlaybackKind.EMBED, embedUrl = episode.embedUrl)
+                it.copy(
+                    loading = false, episode = episode, kind = PlaybackKind.EMBED,
+                    embedUrl = episode.embedUrl, embedReferer = null
+                )
             }
             else -> _state.update {
                 it.copy(loading = false, episode = episode, error = "Tập này chưa có link phát.")
@@ -242,8 +264,27 @@ class PlayerViewModel(
         val ep = s.episode ?: return
         if (ep.embedUrl.isBlank()) return
         _state.update {
-            it.copy(loading = false, kind = PlaybackKind.EMBED, embedUrl = ep.embedUrl, error = "")
+            it.copy(
+                loading = false, kind = PlaybackKind.EMBED, embedUrl = ep.embedUrl,
+                error = "", embedReferer = null
+            )
         }
+    }
+
+    /**
+     * 1.3.1: the source watch-page URL of one Donghua episode, built
+     * from the title slug + the episode locator ("postId|tap-n|sv") —
+     * "https://hhkungfu.ee/watch-<slug>/tap-n-sv<sv>.html", the exact
+     * page the site itself plays the episode on. A malformed locator
+     * degrades to the site root (still a same-host Referer).
+     */
+    private fun donghuaWatchReferer(titleSlug: String, locator: String): String {
+        val parts = locator.split("|")
+        if (parts.size != 3) return "https://hhkungfu.ee/"
+        val epAttr = parts[1].trim()
+        val sv = parts[2].trim()
+        if (epAttr.isBlank() || sv.isBlank()) return "https://hhkungfu.ee/"
+        return "https://hhkungfu.ee/watch-$titleSlug/$epAttr-sv$sv.html"
     }
 
     fun server(): ServerGroup? = _state.value.detail?.servers?.getOrNull(_state.value.serverIndex)

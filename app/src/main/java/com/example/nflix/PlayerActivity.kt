@@ -665,6 +665,20 @@ private fun PlayerScreen(
     }
 }
 
+/**
+ * 1.3.1: load an embed page — with a Referer header ONLY when the
+ * state carries one (Donghua embeds; PlayerViewModel fills it from
+ * the episode's watch-page URL). A null referer loads exactly as
+ * before, so every other family's embed behavior is untouched.
+ */
+private fun loadEmbed(view: WebView, url: String, referer: String?) {
+    if (referer.isNullOrBlank()) {
+        view.loadUrl(url)
+    } else {
+        view.loadUrl(url, mapOf("Referer" to referer))
+    }
+}
+
 @Composable
 private fun EmbedPlayer(
     state: PlayerUiState,
@@ -736,11 +750,13 @@ private fun EmbedPlayer(
                             }
                         }
                         webView = this
-                        loadUrl(state.embedUrl)
+                        loadEmbed(this, state.embedUrl, state.embedReferer)
                     }
                 },
                 update = { view ->
-                    if (view.url != state.embedUrl) view.loadUrl(state.embedUrl)
+                    if (view.url != state.embedUrl) {
+                        loadEmbed(view, state.embedUrl, state.embedReferer)
+                    }
                 },
                 modifier = Modifier.fillMaxSize()
             )

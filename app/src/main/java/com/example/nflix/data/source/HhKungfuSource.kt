@@ -51,6 +51,30 @@ class HhKungfuSource(
 
         /** Default variant when a group carries no explicit key. */
         const val DEFAULT_VARIANT = "pro"
+
+        /**
+         * 1.3.1: desktop-browser UA for the ONE retry in [detail] — the
+         * site sits behind Cloudflare + LiteSpeed and the response a
+         * device gets can differ from what the app UA receives (proven
+         * live 2026-11-01: the app UA replays perfectly from the VM,
+         * while the user's device got an episode-less detail).
+         */
+        private const val DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+
+        /**
+         * Bare client for the desktop-UA retry ONLY. The shared client
+         * stamps the app UA onto every request in its interceptor —
+         * which is exactly what the retry must not carry.
+         */
+        private val desktopClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build()
+        }
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -67,6 +91,17 @@ class HhKungfuSource(
     private suspend fun getDoc(path: String): Document = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(base + path).get().build()
         client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IllegalStateException("HHKungfu HTTP ${resp.code}")
+            Jsoup.parse(resp.body?.string().orEmpty(), base)
+        }
+    }
+
+    /** 1.3.1: the detail page once more, as a desktop browser (see DESKTOP_UA). */
+    private suspend fun getDocDesktop(path: String): Document = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(base + path).get()
+            .header("User-Agent", DESKTOP_UA)
+            .build()
+        desktopClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("HHKungfu HTTP ${resp.code}")
             Jsoup.parse(resp.body?.string().orEmpty(), base)
         }
@@ -214,6 +249,53 @@ class HhKungfuSource(
 
     suspend fun detail(slug: String): TitleDetail {
         val doc = getDoc("/$slug")
+        var parsed = parseDetailDoc(slug, doc)
+        if (parsed.detail.servers.isEmpty()) {
+            // 1.3.1: both parse paths found no episodes in the document
+            // the app UA received. The site answers through Cloudflare +
+            // LiteSpeed and the response a device actually gets can
+            // differ (challenge/variant page) — retry ONCE as a desktop
+            // browser and run both parse paths over the fresh document.
+            val doc2 = runCatching { getDocDesktop("/$slug") }.getOrNull()
+            if (doc2 != null) {
+                val second = parseDetailDoc(slug, doc2)
+                // Keep whichever pass found episodes; when both are
+                // empty keep the SECOND — its counts describe the last
+                // document the app saw, which the loadNote reports.
+                if (second.detail.servers.isNotEmpty() || parsed.detail.servers.isEmpty()) {
+                    parsed = second
+                }
+            }
+        }
+        // 1.3.1 (3b): the outcome is reported honestly on the detail —
+        // the screen shows this note instead of a generic network line.
+        val note = when {
+            parsed.detail.servers.isEmpty() ->
+                "Trang tải về nhưng không thấy tập nào " +
+                    "(khối server: ${parsed.serverBlockCount}, neo tập: ${parsed.episodeAnchorCount})"
+            parsed.fallbackUsed ->
+                "Đã dùng đường dự phòng (khối server chuẩn rỗng)"
+            else -> ""
+        }
+        return parsed.detail.copy(loadNote = note)
+    }
+
+    /** Outcome of one parse pass over a detail document. */
+    private data class ParsedDetail(
+        val detail: TitleDetail,
+        val fallbackUsed: Boolean,
+        val serverBlockCount: Int,
+        val episodeAnchorCount: Int
+    )
+
+    /**
+     * One full parse of a detail document: metadata + server groups.
+     * Primary path = the standard #halim-list-server blocks; when they
+     * yield no episodes at all, [parseLooseEpisodes] sweeps the whole
+     * document (1.3.1). Both [detail] fetches (app UA, desktop UA) run
+     * through here so the two passes can never drift apart.
+     */
+    private fun parseDetailDoc(slug: String, doc: Document): ParsedDetail {
         val ogTitle = doc.selectFirst("meta[property=og:title]")?.attr("content").orEmpty()
         val ogImage = doc.selectFirst("meta[property=og:image]")?.attr("content").orEmpty()
         val desc = doc.selectFirst("meta[name=description]")?.attr("content").orEmpty()
@@ -230,54 +312,12 @@ class HhKungfuSource(
         val servers = mutableListOf<ServerGroup>()
         val serverBlocks = doc.select("#halim-list-server .halim-server")
         for (block in serverBlocks) {
-            val heading = block.selectFirst(".server-name, h3, strong")?.text().orEmpty()
-            val blockText = block.text()
-            val (serverName, langKey) = when {
-                heading.contains("Thuyết Minh", true) || blockText.contains("Thuyết Minh", true) ->
-                    "Thuyết Minh" to "tm"
-                heading.contains("Vietsub", true) || blockText.contains("Vietsub", true) ->
-                    "Vietsub" to "vs"
-                else -> heading.ifBlank { "Server" } to ""
-            }
-            val episodes = mutableListOf<EpisodeItem>()
-            for (a in block.select("a[data-ep], a[href*=watch-]")) {
-                val epAttr = a.attr("data-ep") // "tap-<n>"
-                val num = Regex("(\\d+(?:\\.\\d+)?)").find(epAttr)?.groupValues?.get(1)?.toFloatOrNull()
-                    ?: Regex("(\\d+)").find(a.text())?.groupValues?.get(1)?.toFloatOrNull()
-                    ?: continue
-                val postId = a.attr("data-post-id")
-                val sv = a.attr("data-sv")
-                // Composite locator resolved later by resolveEmbed().
-                val locator = "$postId|$epAttr|$sv"
-                if (episodes.any { it.number == num }) continue
-                episodes.add(
-                    EpisodeItem(
-                        label = "Tập ${if (num % 1f == 0f) num.toInt() else num}",
-                        number = num,
-                        slug = locator
-                    )
-                )
-            }
-            episodes.sortBy { it.number }
-            if (episodes.isNotEmpty()) {
-                // V2 (A7): ONE episode list, FOUR stream variants — the
-                // detail page carries a single locator set; the variant
-                // is a player.php `type` chosen at resolve time. Emit
-                // one group per variant, named with the source's own
-                // button labels ("<lang> · 1080P V1" ... "<lang> · 4K
-                // V2"), so the server sheet offers exactly what the
-                // source's watch page offers.
-                for ((variantKey, variantLabel) in STREAM_VARIANTS) {
-                    servers.add(
-                        ServerGroup(
-                            name = "$serverName · $variantLabel",
-                            langKey = langKey,
-                            episodes = episodes,
-                            variantKey = variantKey
-                        )
-                    )
-                }
-            }
+            servers += parseServerBlock(block)
+        }
+        var fallbackUsed = false
+        if (servers.isEmpty()) {
+            fallbackUsed = true
+            servers += parseLooseEpisodes(doc)
         }
 
         val total = servers.maxOfOrNull { it.episodes.size } ?: 0
@@ -313,13 +353,143 @@ class HhKungfuSource(
             episodeCount = total,
             genres = genreLinks.map { it.first }
         )
-        return TitleDetail(
+        val detail = TitleDetail(
             item = item,
             description = desc,
             totalCount = total,
             servers = servers,
             genreLinks = genreLinks
         )
+        return ParsedDetail(
+            detail = detail,
+            fallbackUsed = fallbackUsed,
+            serverBlockCount = serverBlocks.size,
+            episodeAnchorCount = doc.select("a[data-ep]").size
+        )
+    }
+
+    /** (display name, langKey) of one server block from its heading/body text. */
+    private fun serverNameLang(heading: String, blockText: String): Pair<String, String> = when {
+        heading.contains("Thuyết Minh", true) || blockText.contains("Thuyết Minh", true) ->
+            "Thuyết Minh" to "tm"
+        heading.contains("Vietsub", true) || blockText.contains("Vietsub", true) ->
+            "Vietsub" to "vs"
+        else -> heading.ifBlank { "Server" } to ""
+    }
+
+    /**
+     * One episode anchor to its EpisodeItem, or null when the anchor
+     * carries no readable episode number. The slug is the composite
+     * locator "postId|tap-n|sv" that resolveEmbed() consumes.
+     */
+    private fun episodeOf(a: Element): EpisodeItem? {
+        val epAttr = a.attr("data-ep") // "tap-<n>"
+        val num = Regex("(\\d+(?:\\.\\d+)?)").find(epAttr)?.groupValues?.get(1)?.toFloatOrNull()
+            ?: Regex("(\\d+)").find(a.text())?.groupValues?.get(1)?.toFloatOrNull()
+            ?: return null
+        val postId = a.attr("data-post-id")
+        val sv = a.attr("data-sv")
+        return EpisodeItem(
+            label = "Tập ${if (num % 1f == 0f) num.toInt() else num}",
+            number = num,
+            slug = "$postId|$epAttr|$sv"
+        )
+    }
+
+    /**
+     * V2 (A7): ONE episode list, FOUR stream variants — the detail page
+     * carries a single locator set; the variant is a player.php `type`
+     * chosen at resolve time. Emit one group per variant, named with
+     * the source's own button labels ("<lang> · 1080P V1" ... "<lang>
+     * · 4K V2"), so the server sheet offers exactly what the source's
+     * watch page offers.
+     */
+    private fun variantGroups(
+        serverName: String,
+        langKey: String,
+        episodes: List<EpisodeItem>
+    ): List<ServerGroup> = STREAM_VARIANTS.map { (variantKey, variantLabel) ->
+        ServerGroup(
+            name = "$serverName · $variantLabel",
+            langKey = langKey,
+            episodes = episodes,
+            variantKey = variantKey
+        )
+    }
+
+    /** Primary path: one standard .halim-server block to its variant groups. */
+    private fun parseServerBlock(block: Element): List<ServerGroup> {
+        val heading = block.selectFirst(".server-name, h3, strong")?.text().orEmpty()
+        val (serverName, langKey) = serverNameLang(heading, block.text())
+        val episodes = mutableListOf<EpisodeItem>()
+        for (a in block.select("a[data-ep], a[href*=watch-]")) {
+            val ep = episodeOf(a) ?: continue
+            if (episodes.any { it.number == ep.number }) continue
+            episodes.add(ep)
+        }
+        episodes.sortBy { it.number }
+        if (episodes.isEmpty()) return emptyList()
+        return variantGroups(serverName, langKey, episodes)
+    }
+
+    /** Accumulator for the fallback sweep (one raw server bucket). */
+    private class LooseGroup(val name: String, val langKey: String) {
+        val episodes = mutableListOf<EpisodeItem>()
+    }
+
+    /**
+     * 1.3.1 fallback path: the standard blocks yielded nothing, so
+     * sweep the WHOLE document for episode anchors. Anchors still
+     * nested in a .halim-server ancestor group under that block (named
+     * like the primary path); the rest group by their data-sv value,
+     * named by the nearest server heading seen BEFORE them in document
+     * order ("Server" when none). Deduped by number per group, then
+     * expanded to the four stream variants like the primary path.
+     */
+    private fun parseLooseEpisodes(doc: Document): List<ServerGroup> {
+        val blocks = doc.select(".halim-server")
+        val groups = LinkedHashMap<String, LooseGroup>()
+        var lastHeading = ""
+        val sweep = doc.select(
+            "a[data-ep], a[href*=watch-], .halim-server-name, .server-name"
+        )
+        for (el in sweep) {
+            if (el.tagName() != "a") {
+                // A server heading — only language-bearing ones can
+                // name a fallback group.
+                val t = el.text().trim()
+                if (t.contains("Vietsub", true) || t.contains("Thuyết Minh", true) ||
+                    t.contains("Lồng Tiếng", true)
+                ) {
+                    lastHeading = t
+                }
+                continue
+            }
+            val ep = episodeOf(el) ?: continue
+            val ancestor = el.parents().firstOrNull { it.hasClass("halim-server") }
+            val key: String
+            val nameLang: Pair<String, String>
+            if (ancestor != null) {
+                key = "block:${blocks.indexOf(ancestor)}"
+                val heading = ancestor.selectFirst(".server-name, h3, strong")
+                    ?.text().orEmpty()
+                nameLang = serverNameLang(heading, ancestor.text())
+            } else {
+                key = "sv:${el.attr("data-sv")}"
+                nameLang = serverNameLang(lastHeading, lastHeading)
+            }
+            val group = groups.getOrPut(key) { LooseGroup(nameLang.first, nameLang.second) }
+            if (group.episodes.any { it.number == ep.number }) continue
+            group.episodes.add(ep)
+        }
+        val out = mutableListOf<ServerGroup>()
+        for (group in groups.values) {
+            group.episodes.sortBy { it.number }
+            if (group.episodes.isNotEmpty()) {
+                out += variantGroups(group.name, group.langKey, group.episodes)
+            }
+        }
+        return out
     }
 
     /**
