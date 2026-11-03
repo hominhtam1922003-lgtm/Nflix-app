@@ -776,6 +776,7 @@ internal fun QuickSettingsSheet(
  * opened from the QuickSettings chevron row. Picking a size writes
  * the persisted setting — the player applies it live — and closes.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ResizeSheet(
     current: String,
