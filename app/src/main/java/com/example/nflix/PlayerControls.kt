@@ -183,6 +183,7 @@ internal fun PlayerControls(
     hasPrev: Boolean,
     hasNext: Boolean,
     nextLabel: String,
+    introEndMs: Long,
     onSkipIntro: () -> Unit,
     onShowServers: () -> Unit,
     onShowSpeed: () -> Unit,
@@ -193,9 +194,11 @@ internal fun PlayerControls(
     onFullscreen: () -> Unit
 ) {
     val fraction = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-    val showSkipIntro = settings.skipIntroOutro && durationMs > 360_000 && positionMs < 85_000
+    // 1.3.14: the intro boundary is per title (learned), not a
+    // universal 85 s — see PlayerActivity's introEndMs.
+    val showSkipIntro = settings.skipIntroOutro && durationMs > 360_000 && positionMs < introEndMs
     val showSkipOutro = settings.skipIntroOutro && durationMs > 0 &&
-        durationMs - positionMs in 1..90_000 && positionMs >= 85_000
+        durationMs - positionMs in 1..90_000 && positionMs >= introEndMs
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Top bar

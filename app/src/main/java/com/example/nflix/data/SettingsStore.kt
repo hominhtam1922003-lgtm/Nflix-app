@@ -134,6 +134,41 @@ class SettingsStore(context: Context) {
     }
 
     /**
+     * 1.3.14: learned skip-intro end per title (ms), stored as
+     * "titleId=ms;titleId=ms" like the worker stamps (ids contain
+     * ':' but never ';' or '='). The sources carry no intro
+     * metadata, so the player learns the end point per series
+     * from the user's own correction seek (see PlayerActivity).
+     */
+    val introEnds: Flow<Map<String, Long>> = store.data.map { p ->
+        (p[INTRO_ENDS] ?: "").split(";")
+            .mapNotNull { entry ->
+                val idx = entry.lastIndexOf('=')
+                if (idx <= 0) null
+                else entry.substring(0, idx) to entry.substring(idx + 1).toLongOrNull()
+            }
+            .mapNotNull { (id, ms) -> ms?.let { id to it } }
+            .toMap()
+    }
+
+    suspend fun setIntroEnd(titleId: String, ms: Long) {
+        store.edit { p ->
+            val current = (p[INTRO_ENDS] ?: "").split(";")
+                .mapNotNull { entry ->
+                    val idx = entry.lastIndexOf('=')
+                    if (idx <= 0) null
+                    else entry.substring(0, idx) to entry.substring(idx + 1).toLongOrNull()
+                }
+                .mapNotNull { (id, v) -> v?.let { id to it } }
+                .toMap()
+            val merged = current + (titleId to ms)
+            val kept = if (merged.size > 500)
+                merged.entries.drop(merged.size - 500) else merged.entries
+            p[INTRO_ENDS] = kept.joinToString(";") { (id, v) -> "$id=$v" }
+        }
+    }
+
+    /**
      * Đợt 4 (cobe): last API host that actually answered, cached so a host
      * rotation (the site already changed its web domain once) self-heals —
      * CobeSource rediscovers from the site's JS bundles and stores the new
@@ -262,6 +297,7 @@ class SettingsStore(context: Context) {
         val PLAYER_RESIZE = stringPreferencesKey("player_resize")
         val SEARCH_HISTORY = stringPreferencesKey("search_history")
         val WORKER_STAMPS = stringPreferencesKey("worker_check_stamps")
+        val INTRO_ENDS = stringPreferencesKey("intro_ends")
         val COBE_API_HOST = stringPreferencesKey("cobe_api_host")
         val MANHWA_INDEX = stringPreferencesKey("manhwa_index_json")
         val MANHWA_INDEX_AT = stringPreferencesKey("manhwa_index_built_at")

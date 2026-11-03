@@ -15,16 +15,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -177,7 +176,10 @@ private fun fmtTime(ms: Long): String {
  * distorts to fill.
  */
 private fun resizeModeFor(mode: String): Int = when (mode) {
-    "FULL" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+    // 1.3.14: FULLSUB renders through the same ZOOM frame as
+    // FULL; the bottom anchoring comes from the PlayerView
+    // offset in the surface block, not from the resize mode.
+    "FULL", "FULLSUB" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
     "STRETCH" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
     else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
 }
@@ -252,9 +254,32 @@ private fun PlayerScreen(
     var subtitleOverlay by remember { mutableStateOf<SubtitleView?>(null) }
     // 1.3.13: display aspect of the running video (width × pixel
     // ratio ÷ height), fed by the listener's onVideoSizeChanged.
-    // The FULLSUB surface below sizes itself from this; 0 means
-    // "not known yet" and the surface falls back to 16:9.
+    // The FULLSUB offset in the surface block is computed from
+    // this; 0 means "not known yet" and it falls back to 16:9.
     var videoAspect by remember { mutableFloatStateOf(0f) }
+
+    // 1.3.14: skip-intro is PER TITLE, not a universal 85 s —
+    // intro lengths differ per series and the sources carry no
+    // intro metadata, so the end point is learned: the button
+    // jumps to the remembered end for this title (85 s default
+    // until one is learned); if the user then corrects with a
+    // manual seek within 30 s, the landing position becomes
+    // this title's remembered intro end (SettingsStore).
+    val introEnds by app.settings.introEnds.collectAsState(initial = emptyMap())
+    val introEndMs = introEnds[titleId] ?: 85_000L
+    var lastSkipTarget by remember { mutableStateOf<Long?>(null) }
+    var lastSkipAtMs by remember { mutableStateOf(0L) }
+
+    fun noteManualSeek(targetMs: Long) {
+        val skipTarget = lastSkipTarget ?: return
+        if (System.currentTimeMillis() - lastSkipAtMs > 30_000) return
+        lastSkipTarget = null
+        if (kotlin.math.abs(targetMs - skipTarget) <= 2_000) return
+        val dur = exo.duration
+        if (targetMs in 5_000..600_000 && dur > 0 && targetMs < dur) {
+            playerScope.launch { app.settings.setIntroEnd(titleId, targetMs) }
+        }
+    }
 
     fun applyQualityCap(cap: Int) {
         qualityCap = cap
@@ -537,62 +562,39 @@ private fun PlayerScreen(
                 )
             }
     ) {
-        if (settings.playerResize == "FULLSUB") {
-            // 1.3.13: "Lấp đầy (giữ phụ đề)" — bottom-anchored
-            // zoom for titles whose subtitles are burned into the
-            // picture (no detached track for 1.3.12 to render).
-            // AspectRatioFrameLayout can only crop around the
-            // CENTRE, so this mode swaps the PlayerView for a
-            // TextureView sized by layout instead: uniform scale
-            // until the screen is filled, anchored to the BOTTOM
-            // edge — the whole overflow is cropped from the top,
-            // the bottom of the picture (where burned-in
-            // subtitles live) is never cut, and nothing is
-            // distorted. The other three modes keep the exact
-            // PlayerView path they have always used.
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clipToBounds()
-            ) {
-                val containerAspect =
-                    if (maxHeight > 0.dp) maxWidth / maxHeight else 0f
-                val va = if (videoAspect > 0f) videoAspect else 16f / 9f
-                val sized =
-                    if (containerAspect > 0f && va >= containerAspect) {
-                        // Video relatively wider than the screen:
-                        // fill by height, overflow left/right.
-                        Modifier.fillMaxHeight().aspectRatio(va)
-                    } else {
-                        // Fill by width, overflow at the top only.
-                        Modifier.fillMaxWidth().aspectRatio(va)
-                    }
-                AndroidView(
-                    factory = { ctx ->
-                        android.view.TextureView(ctx).also { tv ->
-                            // Media3 1.4: the texture-surface
-                            // methods live on ExoPlayer's
-                            // VideoComponent, not on ExoPlayer
-                            // itself (verified against the real
-                            // 1.4.1 jar before pushing). The
-                            // getter is @Nullable, so Kotlin sees
-                            // VideoComponent? — safe call (CI #42).
-                            exo.videoComponent?.setVideoTextureView(tv)
-                        }
-                    },
-                    update = { tv ->
-                        // Re-assert after the old surface's detach
-                        // has run, so a mode switch can never leave
-                        // the player surfaceless (black picture).
-                        exo.videoComponent?.setVideoTextureView(tv)
-                    },
-                    onRelease = { tv ->
-                        exo.videoComponent?.clearVideoTextureView(tv)
-                    },
-                    modifier = sized.align(Alignment.BottomCenter)
-                )
-            }
-        } else {
+        // 1.3.14: ONE PlayerView path for every display mode.
+        // 1.3.13 gave FULLSUB its own TextureView surface sized
+        // larger than the screen and bottom-aligned — measured on
+        // the user's device (template match against the FIT shot:
+        // scale 1.26, dy −156 for both) it rendered PIXEL-IDENTICAL
+        // to FULL's centre crop, subtitle still cut: Compose
+        // coerces the oversized child back into the box and a bare
+        // TextureView is centre-filled by the player anyway, so
+        // the bottom anchor never took effect. FULLSUB now reuses
+        // the proven ZOOM path and shifts the whole PlayerView UP
+        // by half the vertical overflow: the crop window lands on
+        // the BOTTOM edge of the picture — the whole overflow is
+        // cropped from the top, the bottom (where burned-in
+        // subtitles live) is kept whole, nothing is distorted.
+        // No surface swap on mode switches either, so switching
+        // can no longer black the picture.
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+        ) {
+            val containerAspect =
+                if (maxHeight > 0.dp) maxWidth / maxHeight else 0f
+            val va = if (videoAspect > 0f) videoAspect else 16f / 9f
+            // Vertical overflow of the ZOOM frame at full width,
+            // halved: ZOOM centre-crops, so shifting up by this
+            // amount pins the video's bottom edge to the screen's
+            // bottom edge. Zero unless FULLSUB on a video narrower
+            // (relatively) than the screen.
+            val shiftUp =
+                if (settings.playerResize == "FULLSUB" &&
+                    containerAspect > 0f && va < containerAspect
+                ) (maxWidth / va - maxHeight) / 2 else 0.dp
             AndroidView(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
@@ -612,7 +614,7 @@ private fun PlayerScreen(
                     // applies to the running player immediately.
                     view.resizeMode = resizeModeFor(settings.playerResize)
                 },
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().offset(y = -shiftUp)
             )
         }
 
@@ -811,12 +813,24 @@ private fun PlayerScreen(
                     }
                     if (exo.isPlaying) exo.pause() else exo.play()
                 },
-                onSeekBack = { exo.seekTo((exo.currentPosition - 10_000).coerceAtLeast(0)) },
-                onSeekFwd = { exo.seekTo(exo.currentPosition + 10_000) },
+                onSeekBack = {
+                    val t = (exo.currentPosition - 10_000).coerceAtLeast(0)
+                    exo.seekTo(t)
+                    noteManualSeek(t)
+                },
+                onSeekFwd = {
+                    val t = exo.currentPosition + 10_000
+                    exo.seekTo(t)
+                    noteManualSeek(t)
+                },
                 onLock = { locked = true },
                 onScrub = { scrubbing = it },
                 onScrubFinished = {
-                    scrubbing?.let { exo.seekTo((it * durationMs).toLong()) }
+                    scrubbing?.let {
+                        val t = (it * durationMs).toLong()
+                        exo.seekTo(t)
+                        noteManualSeek(t)
+                    }
                     scrubbing = null
                 },
                 onPrev = { viewModel.prevEpisode()?.let { viewModel.switchEpisode(it) } },
@@ -824,10 +838,16 @@ private fun PlayerScreen(
                 hasPrev = viewModel.prevEpisode() != null,
                 hasNext = viewModel.nextEpisode() != null,
                 nextLabel = viewModel.nextEpisode()?.label ?: "",
+                introEndMs = introEndMs,
                 onSkipIntro = {
                     val dur = exo.duration
-                    if (exo.currentPosition < 85_000) exo.seekTo(85_000)
-                    else if (dur > 0) exo.seekTo(dur)
+                    if (exo.currentPosition < introEndMs) {
+                        exo.seekTo(introEndMs)
+                        // Arm learning: a manual seek within
+                        // 30 s turns into this title's intro end.
+                        lastSkipTarget = introEndMs
+                        lastSkipAtMs = System.currentTimeMillis()
+                    } else if (dur > 0) exo.seekTo(dur)
                 },
                 onShowServers = { showServers = true },
                 onShowSpeed = { showSpeed = true },
