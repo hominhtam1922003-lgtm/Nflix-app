@@ -2,6 +2,8 @@ package com.example.nflix
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -730,8 +733,22 @@ internal fun QuickSettingsSheet(
     val context = LocalContext.current
     val app = context.applicationContext as NflixApp
     val scope = rememberCoroutineScope()
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+    // 1.3.9: open FULLY expanded and let the content scroll. In
+    // 1.3.8 the sheet opened partially in landscape and its plain
+    // column overflowed the sheet's max height, so the last row
+    // ("Kích thước hiển thị") sat half-clipped at the bottom edge —
+    // unreachable and untappable (user verdict 1.3.8: "Vướng không
+    // kéo lên được... ấn cái nào màn vẫn y nguyên").
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = NflixSurface,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
             Text("Cài đặt phát", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(12.dp))
             QuickRow("Chất lượng", "Theo nguồn đang phát") { onShowQuality() }
@@ -789,8 +806,18 @@ internal fun ResizeSheet(
         scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, mode) }
         onDismiss()
     }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+    // 1.3.9: same reachability guard as QuickSettingsSheet — fully
+    // expanded + scrollable content.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = NflixSurface,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
             Text("Kích thước hiển thị", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(12.dp))
             QualityRow("Vừa màn hình", "Giữ nguyên tỉ lệ gốc, có thể có viền đen", current == "FIT") {

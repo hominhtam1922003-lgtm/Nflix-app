@@ -48,6 +48,7 @@ import com.example.nflix.ui.components.SectionHeader
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixTextMuted
+import com.example.nflix.ui.theme.NflixViolet
 import kotlinx.coroutines.launch
 
 private val FILTER_LABELS = listOf("Tất cả", "Phim", "Donghua", "Truyện")
@@ -99,9 +100,22 @@ fun MyPageScreen(
         )
         return
     }
+    // 1.3.9: the "Đang theo dõi" section is COLLAPSED to the first
+    // 4 rows with a "Xem thêm" toggle — pre-1.3.9 it rendered every
+    // followed title inline, so the page stretched indefinitely
+    // (user verdict 1.3.8).
+    var followingExpanded by remember { mutableStateOf(false) }
+    val followingShown =
+        if (followingExpanded) state.following else state.following.take(4)
+    val followingHasToggle = state.following.size > 4
+
     val followingHeaderIndex = 1
     val favoritesHeaderIndex = followingHeaderIndex +
-        (if (state.following.isNotEmpty()) 1 + state.following.size else 0)
+        (if (state.following.isNotEmpty()) {
+            1 + followingShown.size + (if (followingHasToggle) 1 else 0)
+        } else {
+            0
+        })
 
     LazyColumn(
         state = listState,
@@ -160,12 +174,29 @@ fun MyPageScreen(
             item {
                 SectionHeader("Đang theo dõi")
             }
-            items(state.following.size, key = { i -> state.following[i].item.id }) { i ->
-                val entry = state.following[i]
+            items(followingShown.size, key = { i -> followingShown[i].item.id }) { i ->
+                val entry = followingShown[i]
                 FollowingRow(
                     entry = entry,
                     onClick = { onOpenTitle(entry.item) }
                 )
+            }
+            if (followingHasToggle) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth()
+                            .clickable { followingExpanded = !followingExpanded }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (followingExpanded) "Thu gọn" else "Xem thêm",
+                            color = NflixViolet,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
 
@@ -196,7 +227,11 @@ fun MyPageScreen(
                     modifier = Modifier.padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    favorites.chunked(3).forEach { rowItems ->
+                    // 1.3.9: the inline preview is capped at 6 (two
+                    // rows); the full list lives behind the section's
+                    // "Xem tất cả" — same anti-stretch rule as the
+                    // following section above.
+                    favorites.take(6).chunked(3).forEach { rowItems ->
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             rowItems.forEach { entry ->
                                 PosterCard(
