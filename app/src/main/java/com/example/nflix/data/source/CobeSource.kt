@@ -76,6 +76,13 @@ class CobeSource(
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            // 1.3.2: hard per-request ceiling. readTimeout alone is an
+            // INACTIVITY timeout — a slow-dripping response (measured
+            // on the dead cobephim.fun homepage: 478KB in 30s, still
+            // unfinished) resets it forever, which is what hung the
+            // Player with no total budget. callTimeout bounds the
+            // whole request, drip included.
+            .callTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()
@@ -161,6 +168,16 @@ class CobeSource(
             return getText(base + path)
         } catch (e: Exception) {
             Log.w(TAG, "Cobe API call failed ($path via $base): ${e.message}")
+            // 1.3.2: a 502 means the gateway in front of this API host
+            // is dead (measured 2026-11-03: the saved host AND the
+            // fallback host both 502 while the origin was down). Forget
+            // the host — drop the in-memory cache and the SAVED host —
+            // so the next apiBase() re-runs discovery instead of every
+            // later call paying the dead-host toll first.
+            if (e.message?.contains("Cobe HTTP 502") == true) {
+                if (apiBaseCache == base) apiBaseCache = null
+                runCatching { settings?.setCobeApiHost("") }
+            }
             val found = discoverApiBaseCached()
             if (found != null && found != base) {
                 apiBaseCache = found
@@ -729,8 +746,15 @@ class CobeSource(
         val groups = try {
             fetchGroups(slug, movieId)
         } catch (e: Exception) {
+            // 1.3.2: an episode-list failure used to be SWALLOWED into
+            // an empty "successful" detail (servers=[], no error flag)
+            // — the Player then died with a phantom "Không thấy tập
+            // này" dressed as a network error (dossier phim-0-tap §2
+            // branch C3). Fail loudly like KkPhimSource does: the
+            // merged front flags it via cobeFailed, and the cobe-only
+            // path surfaces this real message.
             Log.w(TAG, "Cobe episode list failed for slug=$slug: ${e.message}")
-            emptyList()
+            throw IllegalStateException("Cobe: không lấy được danh sách tập cho tựa này", e)
         }
         // Released count = highest episode number really present on a
         // server — never the declared episode_total.

@@ -17,12 +17,15 @@ import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
 import com.example.nflix.data.toItem
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 enum class PlaybackKind { STREAM, EMBED }
 
@@ -55,114 +58,145 @@ class PlayerViewModel(
     private val episodeNumber: Float = 0f
 ) : ViewModel() {
 
+    companion object {
+        /** 1.3.2: total ceiling for the player init — see init/loadInitial. */
+        private const val INIT_TIMEOUT_MS = 60_000L
+    }
+
     private val _state = MutableStateFlow(PlayerUiState())
     val state: StateFlow<PlayerUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
             try {
-                val entity = app.database.titleDao().observe(titleId).first()
-                val item = entity?.toItem()
-                    ?: throw IllegalStateException("Không thấy thông tin bộ này")
-                val detail = when (item.sourceId) {
-                    "hhkungfu" -> app.hhKungfu.detail(item.slug)
-                    // Đợt 4: same merged front as the Detail screen, so
-                    // the server pool (KKPhim + Cobe groups) matches what
-                    // the user picked from; cobe-only titles stay cobe.
-                    else -> app.mergedPhim.detailFor(item)
-                }
-                app.database.titleDao().upsert(detail.item.toEntity())
-                val st = app.database.userStateDao().get(titleId)
-
-                var serverIdx = detail.servers.indexOfFirst { s ->
-                    s.episodes.any { it.slug == episodeSlug }
-                }
-                if (serverIdx < 0 && episodeNumber > 0f) {
-                    serverIdx = detail.servers.indexOfFirst { s ->
-                        s.episodes.any { it.number == episodeNumber }
-                    }
-                }
-                if (serverIdx < 0) serverIdx = 0
-                val server = detail.servers.getOrNull(serverIdx)
-                val episode = server?.episodes?.firstOrNull { it.slug == episodeSlug }
-                    ?: server?.episodes?.firstOrNull { it.number == episodeNumber }
-                    ?: server?.episodes?.firstOrNull()
-                    ?: throw IllegalStateException("Không thấy tập này")
-
-                val resume = if (st != null && st.lastUnitNumber == episode.number && !st.finished)
-                    st.positionMs else 0L
-
+                // 1.3.2: ONE total ceiling over the whole init. The
+                // cobe-only detail path used to have no budget at all,
+                // so a dead Cobe (502 / slow-drip rediscovery) hung
+                // init forever: spinner + "Đang tải…" + an episode
+                // sheet stuck at 0 (dossier phim-0-tap branch D).
+                withTimeout(INIT_TIMEOUT_MS) { loadInitial() }
+            } catch (e: TimeoutCancellationException) {
                 _state.update {
                     it.copy(
-                        item = detail.item,
-                        detail = detail,
-                        serverIndex = serverIdx,
-                        userState = st,
-                        resumePositionMs = resume
+                        loading = false,
+                        error = "Tải quá lâu — nguồn phản hồi chậm hoặc đã chết. Hãy thử lại."
                     )
                 }
-                applyEpisode(detail.item, episode)
-                // 0.1: with the auto-fastest setting on, measure the other
-                // servers in the background so the server sheet shows real
-                // statuses/ms instead of a hardcoded claim. Playback itself
-                // is untouched — error-driven auto-switch already exists.
-                if (detail.servers.size > 1) {
-                    viewModelScope.launch {
-                        val auto = try {
-                            app.settings.flow.first().autoFastestServer
-                        } catch (e: Exception) {
-                            true
-                        }
-                        if (auto) {
-                            // 1.1.1 (N3): typed targets like Detail — embed
-                            // pages are reported unmeasurable, never timed.
-                            val statuses = ServerProbe.probeAll(
-                                detail.servers, episode.number
-                            ) { ep ->
-                                when {
-                                    CobeSource.isLocator(ep.slug) ->
-                                        try {
-                                            when (
-                                                val target = app.cobe.resolvePlay(ep.slug)
-                                            ) {
-                                                is CobePlay.Hls ->
-                                                    ProbeTarget.Stream(target.url)
-                                                is CobePlay.Embed ->
-                                                    ProbeTarget.Embed(target.url)
-                                            }
-                                        } catch (e: Exception) {
-                                            ep.embedUrl.takeIf { it.isNotBlank() }
-                                                ?.let { ProbeTarget.Embed(it) }
-                                                ?: ProbeTarget.None
-                                        }
-                                    item.sourceId == "hhkungfu" -> try {
-                                        // V2 (A7): resolve through the
-                                        // variant of the group this
-                                        // episode belongs to.
-                                        val variant = detail.servers
-                                            .firstOrNull { g ->
-                                                g.episodes.any { it.slug == ep.slug }
-                                            }?.variantKey.orEmpty()
-                                        ProbeTarget.Embed(
-                                            app.hhKungfu.resolveEmbed(ep.slug, variant)
-                                        )
-                                    } catch (e: Exception) {
-                                        ProbeTarget.None
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 1.3.2: keep the REAL failure (dead source / episode
+                // not found / no detail from either source) instead of
+                // flattening every error into one generic network
+                // line — the user is told what actually broke.
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        error = e.message?.takeIf { msg -> msg.isNotBlank() }
+                            ?: "Không tải được — kiểm tra mạng rồi thử lại."
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun loadInitial() {
+        val entity = app.database.titleDao().observe(titleId).first()
+        val item = entity?.toItem()
+            ?: throw IllegalStateException("Không thấy thông tin bộ này")
+        val detail = when (item.sourceId) {
+            "hhkungfu" -> app.hhKungfu.detail(item.slug)
+            // Đợt 4: same merged front as the Detail screen, so
+            // the server pool (KKPhim + Cobe groups) matches what
+            // the user picked from; cobe-only titles stay cobe.
+            else -> app.mergedPhim.detailFor(item)
+        }
+        app.database.titleDao().upsert(detail.item.toEntity())
+        val st = app.database.userStateDao().get(titleId)
+
+        var serverIdx = detail.servers.indexOfFirst { s ->
+            s.episodes.any { it.slug == episodeSlug }
+        }
+        if (serverIdx < 0 && episodeNumber > 0f) {
+            serverIdx = detail.servers.indexOfFirst { s ->
+                s.episodes.any { it.number == episodeNumber }
+            }
+        }
+        if (serverIdx < 0) serverIdx = 0
+        val server = detail.servers.getOrNull(serverIdx)
+        val episode = server?.episodes?.firstOrNull { it.slug == episodeSlug }
+            ?: server?.episodes?.firstOrNull { it.number == episodeNumber }
+            ?: server?.episodes?.firstOrNull()
+            ?: throw IllegalStateException("Không thấy tập này")
+
+        val resume = if (st != null && st.lastUnitNumber == episode.number && !st.finished)
+            st.positionMs else 0L
+
+        _state.update {
+            it.copy(
+                item = detail.item,
+                detail = detail,
+                serverIndex = serverIdx,
+                userState = st,
+                resumePositionMs = resume
+            )
+        }
+        applyEpisode(detail.item, episode)
+        // 0.1: with the auto-fastest setting on, measure the other
+        // servers in the background so the server sheet shows real
+        // statuses/ms instead of a hardcoded claim. Playback itself
+        // is untouched — error-driven auto-switch already exists.
+        if (detail.servers.size > 1) {
+            viewModelScope.launch {
+                val auto = try {
+                    app.settings.flow.first().autoFastestServer
+                } catch (e: Exception) {
+                    true
+                }
+                if (auto) {
+                    // 1.1.1 (N3): typed targets like Detail — embed
+                    // pages are reported unmeasurable, never timed.
+                    val statuses = ServerProbe.probeAll(
+                        detail.servers, episode.number
+                    ) { ep ->
+                        when {
+                            CobeSource.isLocator(ep.slug) ->
+                                try {
+                                    when (
+                                        val target = app.cobe.resolvePlay(ep.slug)
+                                    ) {
+                                        is CobePlay.Hls ->
+                                            ProbeTarget.Stream(target.url)
+                                        is CobePlay.Embed ->
+                                            ProbeTarget.Embed(target.url)
                                     }
-                                    ep.streamUrl.isNotBlank() ->
-                                        ProbeTarget.Stream(ep.streamUrl)
-                                    ep.embedUrl.isNotBlank() ->
-                                        ProbeTarget.Embed(ep.embedUrl)
-                                    else -> ProbeTarget.None
+                                } catch (e: Exception) {
+                                    ep.embedUrl.takeIf { it.isNotBlank() }
+                                        ?.let { ProbeTarget.Embed(it) }
+                                        ?: ProbeTarget.None
                                 }
+                            item.sourceId == "hhkungfu" -> try {
+                                // V2 (A7): resolve through the
+                                // variant of the group this
+                                // episode belongs to.
+                                val variant = detail.servers
+                                    .firstOrNull { g ->
+                                        g.episodes.any { it.slug == ep.slug }
+                                    }?.variantKey.orEmpty()
+                                ProbeTarget.Embed(
+                                    app.hhKungfu.resolveEmbed(ep.slug, variant)
+                                )
+                            } catch (e: Exception) {
+                                ProbeTarget.None
                             }
-                            _state.update { it.copy(serverStatuses = statuses) }
+                            ep.streamUrl.isNotBlank() ->
+                                ProbeTarget.Stream(ep.streamUrl)
+                            ep.embedUrl.isNotBlank() ->
+                                ProbeTarget.Embed(ep.embedUrl)
+                            else -> ProbeTarget.None
                         }
                     }
-                }
-            } catch (e: Exception) {
-                _state.update {
-                    it.copy(loading = false, error = "Không tải được — kiểm tra mạng rồi thử lại.")
+                    _state.update { it.copy(serverStatuses = statuses) }
                 }
             }
         }

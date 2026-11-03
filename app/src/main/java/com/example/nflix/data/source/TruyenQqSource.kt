@@ -27,9 +27,14 @@ class TruyenQqSource(
         private val RESERVED_SLUGS = setOf(
             "tim-kiem", "the-loai", "dang-nhap", "dang-ky", "truyen-hot", "contact"
         )
+        // 1.3.2: timeouts aligned with NetTruyenSource (connect 15s /
+        // read 25s). The old 8s connect budget killed BOTH hosts on
+        // slow VN routes while the source itself was alive (measured
+        // 2026-11-03: 10/10 HTTP 200 from the VM in the same minutes
+        // the user's device reported "both hosts not responding").
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()

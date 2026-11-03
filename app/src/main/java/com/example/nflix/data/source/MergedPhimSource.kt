@@ -52,10 +52,24 @@ class MergedPhimSource(
             // join too — the user ordered ALL groups collected (Vietsub /
             // Thuyết minh / Lồng tiếng / Song ngữ), none dropped.
             if (item.family == Family.ANIME) animeDetail(item)
-            else cobe.detail(item.slug, item.family)
+            else cobeDetailBounded(item.slug, item.family)
         } else {
             detail(item.slug, item.family)
         }
+
+    /**
+     * 1.3.2: the cobe-only path under the SAME hard budget as the
+     * merged branch ([fetchCobe]). It used to call cobe.detail()
+     * directly with no ceiling at all: when Cobe died (502 / the
+     * homepage slow-dripping through host rediscovery), Player init
+     * hung forever on "Đang tải…" with an empty episode sheet
+     * (measured 2026-11-03, dossier phim-0-tap branch D).
+     */
+    private suspend fun cobeDetailBounded(slug: String, family: Family): TitleDetail =
+        withTimeoutOrNull(COBE_BUDGET_MS) { cobe.detail(slug, family) }
+            ?: throw IllegalStateException(
+                "Nguồn Cobe không phản hồi kịp — hãy thử lại"
+            )
 
     /**
      * Cobe-first Anime detail: identity and groups from Cobe; KKPhim
@@ -63,7 +77,9 @@ class MergedPhimSource(
      * animation (a same-slug live-action title must never leak in).
      */
     private suspend fun animeDetail(item: TitleItem): TitleDetail {
-        val cb = cobe.detail(item.slug, Family.ANIME)
+        // 1.3.2: bounded like every other cobe entry point (see
+        // cobeDetailBounded) — Anime details start from Cobe too.
+        val cb = cobeDetailBounded(item.slug, Family.ANIME)
         val kk = runCatching { kkPhim.detail(item.slug) }.getOrNull()
             ?: return cb
         if (kk.item.family != Family.ANIME || kk.servers.isEmpty()) return cb

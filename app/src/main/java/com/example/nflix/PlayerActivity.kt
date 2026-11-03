@@ -666,17 +666,42 @@ private fun PlayerScreen(
 }
 
 /**
- * 1.3.1: load an embed page — with a Referer header ONLY when the
- * state carries one (Donghua embeds; PlayerViewModel fills it from
- * the episode's watch-page URL). A null referer loads exactly as
- * before, so every other family's embed behavior is untouched.
+ * Load an embed page into the WebView.
+ *
+ * No referer (every family except Donghua): the embed loads exactly
+ * as it always has — top-level via loadUrl.
+ *
+ * With a referer (Donghua ONLY — PlayerViewModel fills it with the
+ * episode's watch-page URL): 1.3.1 loaded the embed top-level with a
+ * Referer header, which passed streamfree's SERVER-side gate but not
+ * its CLIENT-side one — the embed's JS checks the frame context and,
+ * finding itself top-level (window.self === window.top), renders
+ * "video này chỉ có thể phát trong iframe (-2)". Reproduced both
+ * ways in a real browser 2026-11-03 (dossier donghua-embed-iframe).
+ *
+ * 1.3.2: the embed now rides a wrapper page carrying a REAL <iframe>
+ * whose markup copies player.php's own (referrerpolicy="unsafe-url",
+ * allow="autoplay; fullscreen", allowfullscreen), loaded via
+ * loadDataWithBaseURL with the watch page as baseURL — so the iframe
+ * navigation carries an hhkungfu.ee Referer (server gate) AND the
+ * embed really sits inside a frame (JS gate). Never enable
+ * setWebContentsDebuggingEnabled on this WebView: the same host
+ * answers DevTools-attached contexts with a "-3" refusal.
  */
 private fun loadEmbed(view: WebView, url: String, referer: String?) {
     if (referer.isNullOrBlank()) {
         view.loadUrl(url)
-    } else {
-        view.loadUrl(url, mapOf("Referer" to referer))
+        return
     }
+    val src = url.replace("&", "&amp;").replace("\"", "&quot;")
+    val wrapper = """
+        <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>html,body{margin:0;padding:0;background:#000;height:100%}iframe{border:0;width:100%;height:100%}</style>
+        </head><body>
+        <iframe src="$src" referrerpolicy="unsafe-url" allow="autoplay; fullscreen" allowfullscreen></iframe>
+        </body></html>
+    """.trimIndent()
+    view.loadDataWithBaseURL(referer, wrapper, "text/html", "UTF-8", null)
 }
 
 @Composable
@@ -687,6 +712,11 @@ private fun EmbedPlayer(
 ) {
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
+    // 1.3.2: the last embedUrl actually loaded into the WebView. The
+    // reload guard compares against THIS, never view.url — with the
+    // Donghua wrapper page, view.url is the watch-page baseURL, which
+    // never equals the embed URL.
+    var loadedEmbedUrl by remember { mutableStateOf<String?>(null) }
     // 1.1.1 (N5): a dead embed used to be a dead end — the page's own
     // "Setup error" (or a blank frame) just sat there. Main-frame load
     // failures now raise the same recovery overlay as the stream branch:
@@ -750,11 +780,13 @@ private fun EmbedPlayer(
                             }
                         }
                         webView = this
+                        loadedEmbedUrl = state.embedUrl
                         loadEmbed(this, state.embedUrl, state.embedReferer)
                     }
                 },
                 update = { view ->
-                    if (view.url != state.embedUrl) {
+                    if (loadedEmbedUrl != state.embedUrl) {
+                        loadedEmbedUrl = state.embedUrl
                         loadEmbed(view, state.embedUrl, state.embedReferer)
                     }
                 },

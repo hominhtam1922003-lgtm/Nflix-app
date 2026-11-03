@@ -37,9 +37,11 @@ class HhKungfuSource(
          * ships four player buttons (data-type tiktik/pro/vip4k/
          * vip4kv2) labeled "1080P V1 · 1080P V2 · 4K V1 · 4K V2".
          * Measured 2026-11-01: player.php returns a DIFFERENT embed
-         * per type (the 4K pair lives under /embed/vt/, the 1080P pair
-         * under /embed/v/). The labels are the source's claim, carried
-         * as-is — the app never invents a quality label of its own.
+         * per type. Re-measured 2026-11-03 (dossier donghua-embed):
+         * the two pairs do NOT split by path — EACH pair mixes both:
+         * V1 (tiktik / vip4k) lives under /embed/vt/, V2 (pro /
+         * vip4kv2) under /embed/v/. The labels are the source's claim,
+         * carried as-is — the app never invents a quality label of its own.
          * (key = player.php `type`, value = the source's button label)
          */
         val STREAM_VARIANTS = listOf(

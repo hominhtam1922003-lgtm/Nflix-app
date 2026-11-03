@@ -115,6 +115,13 @@ data class FamilyUiState(
     /** C3: appending the next Truyện rows page failed (retry keeps hasMore). */
     val truyenRowsError: Boolean = false,
     /**
+     * 1.3.2: the Truyện shelves are currently served by the NetTruyen
+     * FALLBACK (both TruyenQQ hosts failed together). The status line
+     * says so out loud — fallback content is never passed off as
+     * TruyenQQ content.
+     */
+    val truyenFallbackSource: Boolean = false,
+    /**
      * V2 (0.4): the tab's main load FAILED for the four families that
      * used to swallow errors (Phim/Anime/Donghua/Manhwa). FamilyScreen
      * shows the frame-6 error block + Thử lại while this is set and the
@@ -266,20 +273,57 @@ class FamilyViewModel(
         }
     }
 
+    /**
+     * 1.3.2: the Truyện home shelves (hot + latest from ONE home fetch)
+     * with the NetTruyen fallback. The two TruyenQQ hosts are a single
+     * operation — when they fail together the tab used to die outright
+     * (user report 2026-11-03). NetTruyen's whole-site lists then serve
+     * the same shelves: Top ngày as the hot shelf, latest updates as
+     * the rows. Items are re-homed to TRUYEN but keep sourceId
+     * NETTRUYEN, so Detail/Reader route to NetTruyen by sourceId.
+     * Returns (hot, latest, servedByFallback). Throws only when the
+     * fallback fails too — the caller then raises the real error state.
+     */
+    private suspend fun truyenHomeShelves(): Triple<List<TitleItem>, List<TitleItem>, Boolean> =
+        try {
+            val (hot, latest) = app.truyenQq.home()
+            Triple(hot, latest, false)
+        } catch (e: Exception) {
+            val hot = app.netTruyen.siteTopDay(1)
+            val latest = app.netTruyen.siteLatest(1)
+            Triple(hot, latest, true)
+        }
+
+    /** 1.3.2: "Mới tinh" with the same NetTruyen fallback (sort=15, whole site). */
+    private suspend fun truyenNewestShelf(): Pair<List<TitleItem>, Boolean> =
+        try {
+            app.truyenQq.newest(1) to false
+        } catch (e: Exception) {
+            app.netTruyen.siteNewest(1) to true
+        }
+
     /** A8: "Mới tinh" shelf — series that just launched, not new chapters. */
     private fun loadFreshShelf() {
         viewModelScope.launch {
             try {
+                var freshFallback = false
                 val list = when (family) {
                     Family.MANHWA -> app.netTruyen.newest(1)
-                    Family.TRUYEN -> app.truyenQq.newest(1)
+                    Family.TRUYEN -> {
+                        val (items, fb) = truyenNewestShelf()
+                        freshFallback = fb
+                        items
+                    }
                     else -> emptyList()
                 }
                 app.database.titleDao().upsertAll(list.map { it.toEntity() })
                 _state.update {
                     if (family == Family.TRUYEN) {
-                        it.copy(freshShelf = list, truyenFreshError = false)
-                            .withTruyenStatus()
+                        it.copy(
+                            freshShelf = list,
+                            truyenFreshError = false,
+                            truyenFallbackSource = it.truyenFallbackSource || freshFallback
+                        ).withTruyenStatus()
                     } else {
                         it.copy(freshShelf = list)
                     }
@@ -303,7 +347,9 @@ class FamilyViewModel(
     /** C3: retry the Truyện tab's failed loads (main list + "Mới tinh" shelf). */
     fun retryTruyen() {
         if (family != Family.TRUYEN) return
-        _state.update { it.copy(truyenError = false, truyenFreshError = false) }
+        _state.update {
+            it.copy(truyenError = false, truyenFreshError = false, truyenFallbackSource = false)
+        }
         selectContext(_state.value.contextIndex)
         loadFreshShelf()
     }
@@ -401,6 +447,10 @@ class FamilyViewModel(
         if (exitedBrowse) loadDonghuaRows()
         viewModelScope.launch {
             try {
+                // 1.3.2: set by the TRUYEN branch when the NetTruyen
+                // fallback served this load (published to the UI state
+                // below so the status line can disclose it).
+                var truyenUsedFallback = false
                 val (posters, rows) = when (family) {
                     Family.PHIM -> {
                         val kind = PHIM_KINDS.getOrNull(index)?.second ?: "phim-bo"
@@ -426,13 +476,26 @@ class FamilyViewModel(
                             }
                             else -> {
                                 val slug = TRUYEN_GENRES[index].second
+                                // 1.3.2: the DEFAULT context's shelves
+                                // fall back to NetTruyen when both
+                                // TruyenQQ hosts fail. Genre browsing
+                                // deliberately gets NO fallback — the
+                                // 59-chip sheet is TruyenQQ's own slug
+                                // system and NetTruyen's does not map
+                                // onto it (dossier truyen-fallback §3).
                                 val raw = if (slug.isEmpty()) {
-                                    app.truyenQq.home()
+                                    val (hot, latest, fb) = truyenHomeShelves()
+                                    truyenUsedFallback = fb
+                                    hot to latest
                                 } else {
                                     val list = app.truyenQq.byGenre(slug)
                                     list to list
                                 }
-                                if (status == STATUS_ONGOING) {
+                                if (status == STATUS_ONGOING && !truyenUsedFallback) {
+                                    // Skipped under fallback: the
+                                    // completed set is a TruyenQQ
+                                    // harvest — with the source down it
+                                    // cannot be computed honestly.
                                     val done = ensureTruyenCompletedSlugs()
                                     raw.first.filter { it.slug !in done } to
                                         raw.second.filter { it.slug !in done }
@@ -453,6 +516,8 @@ class FamilyViewModel(
                     } else if (family == Family.TRUYEN) {
                         // C3: a loaded Truyện tab clears its error state and
                         // publishes which host served it + how long it took.
+                        // 1.3.2: also publish whether the NetTruyen fallback
+                        // served this load (status line discloses it).
                         it.copy(
                             loading = false,
                             posters = posters,
@@ -460,7 +525,8 @@ class FamilyViewModel(
                             rowsPage = 1,
                             rowsHasMore = rowsHasMoreFor(index),
                             truyenError = false,
-                            truyenRowsError = false
+                            truyenRowsError = false,
+                            truyenFallbackSource = truyenUsedFallback
                         ).withTruyenStatus()
                     } else {
                         it.copy(
@@ -555,7 +621,10 @@ class FamilyViewModel(
             return
         }
         // Manhwa index mode paginates locally over the loaded index.
-        if (family == Family.MANHWA &&
+        // 1.3.2: only when an index exists — with the index missing the
+        // rows came from the NetTruyen fallback and must not be wiped
+        // by an empty local window.
+        if (family == Family.MANHWA && manhwaIndex != null &&
             (s.manhwaFilter.genre != null || s.manhwaFilter.audience != null)
         ) {
             manhwaWindow += MANHWA_WINDOW_STEP
@@ -1019,7 +1088,13 @@ class FamilyViewModel(
         viewModelScope.launch {
             try {
                 when {
-                    manhwaUsesIndex() -> {
+                    // 1.3.2: index mode only when an index actually
+                    // exists. When the TruyenQQ index cannot be built
+                    // (both hosts down) and no cache survives, the tab
+                    // falls through to the NetTruyen branches below —
+                    // the shelf is then served by /tim-truyen/
+                    // manhwa-11400 instead of an empty window.
+                    manhwaUsesIndex() && !manhwaIndex.isNullOrEmpty() -> {
                         val (window, hasMore) = manhwaIndexWindow()
                         app.database.titleDao().upsertAll(window.map { it.toEntity() })
                         _state.update {

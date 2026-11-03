@@ -254,9 +254,12 @@ fun FamilyScreen(
         // C3 (K4): Truyện host transparency — a small line under the header,
         // shown only when there is something worth telling: the fallback
         // host is serving, the last load was slow (>8s), or a load failed.
-        val showTruyenStatus = family == Family.TRUYEN && state.truyenHostLabel.isNotBlank() &&
+        // 1.3.2: the NetTruyen fallback (both TruyenQQ hosts down) is one
+        // of those things — it is disclosed, never passed off silently.
+        val showTruyenStatus = family == Family.TRUYEN &&
+            (state.truyenHostLabel.isNotBlank() || state.truyenFallbackSource) &&
             (state.truyenOnFallback || state.truyenLastLoadMs > 8000 ||
-                state.truyenError || state.truyenFreshError)
+                state.truyenError || state.truyenFreshError || state.truyenFallbackSource)
         if (showTruyenStatus) {
             item {
                 Row(
@@ -266,12 +269,17 @@ fun FamilyScreen(
                 ) {
                     Text(
                         buildString {
-                            append("Nguồn: ")
-                            append(state.truyenHostLabel)
-                            if (state.truyenLastLoadMs >= 0) {
-                                append(" · tải " + fmtLoadMs(state.truyenLastLoadMs))
+                            if (state.truyenFallbackSource) {
+                                append("Nguồn: NetTruyen · đang dùng nguồn dự phòng")
+                                append(" — TruyenQQ không phản hồi")
+                            } else {
+                                append("Nguồn: ")
+                                append(state.truyenHostLabel)
+                                if (state.truyenLastLoadMs >= 0) {
+                                    append(" · tải " + fmtLoadMs(state.truyenLastLoadMs))
+                                }
+                                if (state.truyenOnFallback) append(" · đang dùng host dự phòng")
                             }
-                            if (state.truyenOnFallback) append(" · đang dùng host dự phòng")
                             if (state.truyenError) append(" · lần tải gần nhất lỗi")
                             if (state.truyenFreshError) append(" · kệ Mới tinh lỗi")
                         },

@@ -61,7 +61,14 @@ class NetTruyenSource(
 
     private fun fmtNum(n: Float): String = if (n % 1f == 0f) n.toInt().toString() else n.toString()
 
-    private fun parseItem(el: Element): TitleItem? {
+    /**
+     * 1.3.2: [family] is a parameter (was hardcoded MANHWA) so the
+     * whole-site lists can re-home their items to TRUYEN when they
+     * feed the Truyện tab as its fallback. The sourceId stays
+     * NETTRUYEN either way — Detail/Reader route by sourceId, so a
+     * re-homed item still opens through this source.
+     */
+    private fun parseItem(el: Element, family: Family = Family.MANHWA): TitleItem? {
         val link = el.selectFirst("a.jtip") ?: el.selectFirst("a[href*=/truyen-tranh/]") ?: return null
         val href = link.attr("href")
         val slug = href.substringAfter("/truyen-tranh/").trimEnd('/').substringBefore('/').substringBefore('?')
@@ -78,8 +85,8 @@ class NetTruyenSource(
         val chapNum = if (chapText.isNotBlank()) chapNumber(chapText) else -1f
         val timeText = el.selectFirst("li.chapter .time, .chapter .time")?.text()?.trim().orEmpty()
         return TitleItem(
-            id = "${Family.MANHWA.name}:$SOURCE_ID:$slug",
-            family = Family.MANHWA,
+            id = "${family.name}:$SOURCE_ID:$slug",
+            family = family,
             sourceId = SOURCE_ID,
             slug = slug,
             name = name,
@@ -91,8 +98,32 @@ class NetTruyenSource(
         )
     }
 
-    private fun parseItems(doc: Document): List<TitleItem> =
-        doc.select("div.item, .item").mapNotNull { parseItem(it) }.distinctBy { it.slug }
+    private fun parseItems(doc: Document, family: Family = Family.MANHWA): List<TitleItem> =
+        doc.select("div.item, .item").mapNotNull { parseItem(it, family) }.distinctBy { it.slug }
+
+    // ------------------------------------------------------------------
+    // 1.3.2: whole-site lists — the Truyện tab's FALLBACK shelves for
+    // when both TruyenQQ hosts fail together (they are one operation;
+    // measured dead-together on the user's device 2026-11-03 while
+    // NetTruyen answered in <1s). Endpoints measured live 2026-11-03
+    // (dossier truyen-fallback): /tim-truyen = latest site-wide,
+    // sort=15 = brand-new series, sort=13 = Top ngày — 36 titles each.
+    // The home page "/" is a landing page and parses ZERO titles —
+    // never use it. Items default to family TRUYEN (re-homed); the
+    // sourceId stays NETTRUYEN so Detail/Reader route here.
+    // ------------------------------------------------------------------
+
+    /** Whole-site latest updates — fallback for Truyện "Mới cập nhật". */
+    suspend fun siteLatest(page: Int = 1, family: Family = Family.TRUYEN): List<TitleItem> =
+        parseItems(getDoc("/tim-truyen?page=$page"), family)
+
+    /** Whole-site brand-new series (sort=15) — fallback for Truyện "Mới tinh". */
+    suspend fun siteNewest(page: Int = 1, family: Family = Family.TRUYEN): List<TitleItem> =
+        parseItems(getDoc("/tim-truyen?sort=15&page=$page"), family)
+
+    /** Whole-site Top ngày (sort=13) — fallback for the Truyện hot shelf. */
+    suspend fun siteTopDay(page: Int = 1, family: Family = Family.TRUYEN): List<TitleItem> =
+        parseItems(getDoc("/tim-truyen?sort=13&page=$page"), family)
 
     /** "Đang hot" for the Manhwa tab: genre list sorted by Top ngày (sort=13). */
     suspend fun hot(page: Int = 1): List<TitleItem> =
