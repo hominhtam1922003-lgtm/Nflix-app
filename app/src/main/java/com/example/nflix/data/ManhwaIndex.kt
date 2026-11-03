@@ -3,6 +3,7 @@ package com.example.nflix.data
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.source.TruyenQqSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -125,6 +126,12 @@ object ManhwaIndex {
         for (p in 1..11) {
             val items = try {
                 source.manhwaShelf(p)
+            } catch (e: CancellationException) {
+                // 1.3.3: the caller's total budget (withTimeoutOrNull
+                // in loadManhwaIndex) must abort the build — swallowing
+                // cancellation here would degrade it into a partial,
+                // tag-less index that then gets cached as if complete.
+                throw e
             } catch (e: Exception) {
                 break
             }
@@ -136,9 +143,13 @@ object ManhwaIndex {
         for (batch in titles.chunked(6)) {
             val built = batch.map { item ->
                 async {
-                    val detail = runCatching {
+                    val detail = try {
                         source.detail(item.slug, Family.MANHWA)
-                    }.getOrNull()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        null
+                    }
                     val (genres, audience) = normalize(
                         detail?.genreLinks?.map { it.second } ?: emptyList()
                     )

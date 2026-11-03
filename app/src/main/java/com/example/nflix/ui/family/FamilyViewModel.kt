@@ -13,12 +13,16 @@ import com.example.nflix.data.model.matchesStatus
 import com.example.nflix.data.matchesVersion
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.toEntity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -129,6 +133,20 @@ data class FamilyUiState(
      */
     val familyError: Boolean = false,
     /**
+     * 1.3.3: the REAL error text behind [familyError] — which source
+     * failed and what it answered. The frame-6 error block prints this
+     * instead of the canned "check your connection" line (1.3.2 kept
+     * only boolean flags, so the real error never reached the screen;
+     * dossier truyen-hang-133 §5).
+     */
+    val familyErrorDetail: String = "",
+    /**
+     * 1.3.3: the REAL error text behind [truyenError]: what TruyenQQ
+     * answered AND what the NetTruyen fallback answered, kept by
+     * truyenHomeShelves instead of being discarded on the way up.
+     */
+    val truyenErrorDetail: String = "",
+    /**
      * V2 (0.4): Anime only — the country pools are still harvesting, so
      * the tab is classifying; the screen explains the gradual fill-in
      * instead of looking broken/empty.
@@ -231,6 +249,18 @@ class FamilyViewModel(
 
         private const val MANHWA_WINDOW_STEP = 40
 
+        /** 1.3.3: Truyện primary budget before the NetTruyen fallback engages. */
+        private const val TRUYEN_PRIMARY_BUDGET_MS = 20_000L
+
+        /** 1.3.3: total budget of one Truyện tab load (the selectContext branch). */
+        private const val TRUYEN_LOAD_BUDGET_MS = 60_000L
+
+        /** 1.3.3: per-shelf budget for the Manhwa default lists. */
+        private const val MANHWA_SHELF_BUDGET_MS = 45_000L
+
+        /** 1.3.3: total budget of one Manhwa index build. */
+        private const val MANHWA_INDEX_BUDGET_MS = 120_000L
+
         /** V2 (A1): raw source pages scanned per version-filter round. */
         private const val PHIM_VERSION_SCAN_PAGES = 3
 
@@ -273,9 +303,28 @@ class FamilyViewModel(
         }
     }
 
+    /** 1.3.3: an error's display text — its message, or its type when messageless. */
+    private fun describeError(e: Exception): String =
+        e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+
     /**
-     * 1.3.2: the Truyện home shelves (hot + latest from ONE home fetch)
-     * with the NetTruyen fallback. The two TruyenQQ hosts are a single
+     * 1.3.3: run one fallback shelf; failure degrades to (null, error
+     * text) instead of throwing, so one dead shelf cannot kill the
+     * other (the 1.3.2 fallback was all-or-nothing).
+     */
+    private suspend fun shelfOrError(
+        block: suspend () -> List<TitleItem>
+    ): Pair<List<TitleItem>?, String> = try {
+        block() to ""
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null to describeError(e)
+    }
+
+    /**
+     * The Truyện home shelves (hot + latest from ONE home fetch) with
+     * the NetTruyen fallback. The two TruyenQQ hosts are a single
      * operation — when they fail together the tab used to die outright
      * (user report 2026-11-03). NetTruyen's whole-site lists then serve
      * the same shelves: Top ngày as the hot shelf, latest updates as
@@ -283,24 +332,66 @@ class FamilyViewModel(
      * NETTRUYEN, so Detail/Reader route to NetTruyen by sourceId.
      * Returns (hot, latest, servedByFallback). Throws only when the
      * fallback fails too — the caller then raises the real error state.
+     *
+     * 1.3.3: the fallback engages on TIME, not only on exception. The
+     * primary gets [TRUYEN_PRIMARY_BUDGET_MS]; an overrun — the
+     * slow-drip hang of 1.3.2, which never throws and so never reached
+     * the fallback — falls through to NetTruyen exactly like a
+     * failure. The two fallback shelves run in PARALLEL and publish
+     * independently. Both sides' error texts are KEPT: when both fail,
+     * the thrown message names what TruyenQQ answered and what
+     * NetTruyen answered, and the error screen prints it verbatim.
      */
-    private suspend fun truyenHomeShelves(): Triple<List<TitleItem>, List<TitleItem>, Boolean> =
-        try {
-            val (hot, latest) = app.truyenQq.home()
-            Triple(hot, latest, false)
+    private suspend fun truyenHomeShelves(): Triple<List<TitleItem>, List<TitleItem>, Boolean> {
+        var primaryError = ""
+        val primary = try {
+            withTimeoutOrNull(TRUYEN_PRIMARY_BUDGET_MS) { app.truyenQq.home() }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            val hot = app.netTruyen.siteTopDay(1)
-            val latest = app.netTruyen.siteLatest(1)
-            Triple(hot, latest, true)
+            primaryError = describeError(e)
+            null
         }
+        if (primary != null) return Triple(primary.first, primary.second, false)
+        if (primaryError.isBlank()) {
+            primaryError = "quá ${TRUYEN_PRIMARY_BUDGET_MS / 1000} giây không phản hồi"
+        }
+        val (topDay, latest, fbError) = coroutineScope {
+            val topD = async { shelfOrError { app.netTruyen.siteTopDay(1) } }
+            val latestD = async { shelfOrError { app.netTruyen.siteLatest(1) } }
+            val (top, topErr) = topD.await()
+            val (lat, latErr) = latestD.await()
+            Triple(
+                top, lat,
+                listOf(topErr, latErr).filter { it.isNotBlank() }.distinct()
+                    .joinToString(" · ")
+            )
+        }
+        if (topDay == null && latest == null) {
+            throw IllegalStateException(
+                "TruyenQQ: $primaryError — NetTruyen dự phòng: $fbError"
+            )
+        }
+        return Triple(topDay ?: emptyList(), latest ?: emptyList(), true)
+    }
 
-    /** 1.3.2: "Mới tinh" with the same NetTruyen fallback (sort=15, whole site). */
-    private suspend fun truyenNewestShelf(): Pair<List<TitleItem>, Boolean> =
-        try {
-            app.truyenQq.newest(1) to false
+    /**
+     * "Mới tinh" with the NetTruyen fallback (sort=15, whole site).
+     * 1.3.3: the primary is time-boxed like truyenHomeShelves — a
+     * dripping TruyenQQ must not stall this shelf until the client's
+     * own callTimeout happens to fire.
+     */
+    private suspend fun truyenNewestShelf(): Pair<List<TitleItem>, Boolean> {
+        val primary = try {
+            withTimeoutOrNull(TRUYEN_PRIMARY_BUDGET_MS) { app.truyenQq.newest(1) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            app.netTruyen.siteNewest(1) to true
+            null
         }
+        if (primary != null) return primary to false
+        return app.netTruyen.siteNewest(1) to true
+    }
 
     /** A8: "Mới tinh" shelf — series that just launched, not new chapters. */
     private fun loadFreshShelf() {
@@ -328,6 +419,8 @@ class FamilyViewModel(
                         it.copy(freshShelf = list)
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // C3: a failed Truyện shelf is an ERROR, not an empty shelf.
                 if (family == Family.TRUYEN) {
@@ -348,7 +441,10 @@ class FamilyViewModel(
     fun retryTruyen() {
         if (family != Family.TRUYEN) return
         _state.update {
-            it.copy(truyenError = false, truyenFreshError = false, truyenFallbackSource = false)
+            it.copy(
+                truyenError = false, truyenErrorDetail = "",
+                truyenFreshError = false, truyenFallbackSource = false
+            )
         }
         selectContext(_state.value.contextIndex)
         loadFreshShelf()
@@ -369,25 +465,25 @@ class FamilyViewModel(
         when (family) {
             Family.TRUYEN -> retryTruyen()
             Family.PHIM -> {
-                _state.update { it.copy(familyError = false) }
+                _state.update { it.copy(familyError = false, familyErrorDetail = "") }
                 applyPhimFilter(_state.value.phimFilter)
                 loadComingSoon()
             }
             Family.ANIME -> {
                 animePoolStarted = false
                 animePoolFailed = false
-                _state.update { it.copy(familyError = false, loading = true) }
+                _state.update { it.copy(familyError = false, familyErrorDetail = "", loading = true) }
                 startAnimePool()
             }
             Family.DONGHUA -> {
-                _state.update { it.copy(familyError = false) }
+                _state.update { it.copy(familyError = false, familyErrorDetail = "") }
                 selectContext(_state.value.contextIndex)
                 loadDonghuaRows()
                 loadDonghuaGenres()
                 loadDonghuaTrending()
             }
             Family.MANHWA -> {
-                _state.update { it.copy(familyError = false) }
+                _state.update { it.copy(familyError = false, familyErrorDetail = "") }
                 loadManhwaLists()
                 loadFreshShelf()
             }
@@ -468,42 +564,19 @@ class FamilyViewModel(
                         list to _state.value.rows
                     }
                     Family.TRUYEN -> {
-                        val status = _state.value.truyenStatus
-                        when {
-                            status == STATUS_COMPLETED -> {
-                                val list = app.truyenQq.completed(1)
-                                list to list
-                            }
-                            else -> {
-                                val slug = TRUYEN_GENRES[index].second
-                                // 1.3.2: the DEFAULT context's shelves
-                                // fall back to NetTruyen when both
-                                // TruyenQQ hosts fail. Genre browsing
-                                // deliberately gets NO fallback — the
-                                // 59-chip sheet is TruyenQQ's own slug
-                                // system and NetTruyen's does not map
-                                // onto it (dossier truyen-fallback §3).
-                                val raw = if (slug.isEmpty()) {
-                                    val (hot, latest, fb) = truyenHomeShelves()
-                                    truyenUsedFallback = fb
-                                    hot to latest
-                                } else {
-                                    val list = app.truyenQq.byGenre(slug)
-                                    list to list
-                                }
-                                if (status == STATUS_ONGOING && !truyenUsedFallback) {
-                                    // Skipped under fallback: the
-                                    // completed set is a TruyenQQ
-                                    // harvest — with the source down it
-                                    // cannot be computed honestly.
-                                    val done = ensureTruyenCompletedSlugs()
-                                    raw.first.filter { it.slug !in done } to
-                                        raw.second.filter { it.slug !in done }
-                                } else {
-                                    raw
-                                }
-                            }
-                        }
+                        // 1.3.3: the whole branch runs under a TOTAL
+                        // budget — when it expires, the load lands in
+                        // the error state below instead of spinning
+                        // forever (dossier truyen-hang-133 §6.2).
+                        val t = withTimeoutOrNull(TRUYEN_LOAD_BUDGET_MS) {
+                            loadTruyenContext(index)
+                        } ?: throw IllegalStateException(
+                            "Nguồn Truyện quá ${TRUYEN_LOAD_BUDGET_MS / 1000} giây " +
+                                "chưa tải xong — TruyenQQ và dự phòng NetTruyen " +
+                                "đều không kịp phản hồi"
+                        )
+                        truyenUsedFallback = t.third
+                        t.first to t.second
                     }
                     else -> emptyList<TitleItem>() to emptyList()
                 }
@@ -512,7 +585,10 @@ class FamilyViewModel(
                     // Donghua rows are owned by loadDonghuaRows/loadMoreRows —
                     // a day-chip switch must not clobber them with a stale copy.
                     if (family == Family.DONGHUA) {
-                        it.copy(loading = false, posters = posters, familyError = false)
+                        it.copy(
+                            loading = false, posters = posters,
+                            familyError = false, familyErrorDetail = ""
+                        )
                     } else if (family == Family.TRUYEN) {
                         // C3: a loaded Truyện tab clears its error state and
                         // publishes which host served it + how long it took.
@@ -525,6 +601,7 @@ class FamilyViewModel(
                             rowsPage = 1,
                             rowsHasMore = rowsHasMoreFor(index),
                             truyenError = false,
+                            truyenErrorDetail = "",
                             truyenRowsError = false,
                             truyenFallbackSource = truyenUsedFallback
                         ).withTruyenStatus()
@@ -535,20 +612,81 @@ class FamilyViewModel(
                             rows = rows,
                             rowsPage = 1,
                             rowsHasMore = rowsHasMoreFor(index),
-                            familyError = false
+                            familyError = false,
+                            familyErrorDetail = ""
                         )
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _state.update {
                     // C3: for Truyện an exception means "load failed", never
                     // silently an empty tab (K4). V2 (0.4) extends the same
                     // honesty to the other families via familyError.
+                    // 1.3.3: the REAL error text is kept in state — the
+                    // error screens print it instead of a canned line.
                     if (family == Family.TRUYEN) {
-                        it.copy(loading = false, truyenError = true).withTruyenStatus()
+                        it.copy(
+                            loading = false,
+                            truyenError = true,
+                            truyenErrorDetail = describeError(e)
+                        ).withTruyenStatus()
                     } else {
-                        it.copy(loading = false, familyError = true)
+                        it.copy(
+                            loading = false,
+                            familyError = true,
+                            familyErrorDetail = describeError(e)
+                        )
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * 1.3.3: the Truyện branch of selectContext, extracted so the
+     * caller can wrap it in a total time budget. Returns
+     * (posters, rows, servedByFallback).
+     */
+    private suspend fun loadTruyenContext(
+        index: Int
+    ): Triple<List<TitleItem>, List<TitleItem>, Boolean> {
+        val status = _state.value.truyenStatus
+        return when {
+            status == STATUS_COMPLETED -> {
+                val list = app.truyenQq.completed(1)
+                Triple(list, list, false)
+            }
+            else -> {
+                val slug = TRUYEN_GENRES[index].second
+                // 1.3.2: the DEFAULT context's shelves fall back to
+                // NetTruyen when both TruyenQQ hosts fail. Genre
+                // browsing deliberately gets NO fallback — the 59-chip
+                // sheet is TruyenQQ's own slug system and NetTruyen's
+                // does not map onto it (dossier truyen-fallback §3).
+                // Preserved unchanged in 1.3.3.
+                var usedFallback = false
+                val raw = if (slug.isEmpty()) {
+                    val (hot, latest, fb) = truyenHomeShelves()
+                    usedFallback = fb
+                    hot to latest
+                } else {
+                    val list = app.truyenQq.byGenre(slug)
+                    list to list
+                }
+                if (status == STATUS_ONGOING && !usedFallback) {
+                    // Skipped under fallback: the completed set is a
+                    // TruyenQQ harvest — with the source down it
+                    // cannot be computed honestly.
+                    val done = ensureTruyenCompletedSlugs()
+                    Triple(
+                        raw.first.filter { it.slug !in done },
+                        raw.second.filter { it.slug !in done },
+                        usedFallback
+                    )
+                } else {
+                    Triple(raw.first, raw.second, usedFallback)
                 }
             }
         }
@@ -679,7 +817,7 @@ class FamilyViewModel(
     }
 
     // ------------------------------------------------------------------
-    // PHIM (Khối A — merged KKPhim + Cobe catalog)
+    // PHIM (Khối A — KKPhim only since 1.3.3, user order 09:42)
     // ------------------------------------------------------------------
 
     /** True while the last version-filter round still had raw source pages. */
@@ -688,9 +826,9 @@ class FamilyViewModel(
     /**
      * V2 (A1): with a PHIÊN BẢN version set, one "page" of results is a
      * ROUND of [PHIM_VERSION_SCAN_PAGES] raw source pages filtered
-     * locally (the Cobe filtered-merge precedent) — version density
-     * varies, and a single raw page would starve the grid. The KKPhim
-     * API ignores version= entirely, so the server is never asked.
+     * locally (the filtered-scan precedent) — version density varies,
+     * and a single raw page would starve the grid. The KKPhim API
+     * ignores version= entirely, so the server is never asked.
      */
     private suspend fun fetchPhim(filter: PhimFilter, page: Int): List<TitleItem> {
         if (filter.version.isEmpty()) return fetchPhimRaw(filter, page)
@@ -739,7 +877,8 @@ class FamilyViewModel(
                             rows = rows,
                             rowsPage = 1,
                             rowsHasMore = rows.isNotEmpty(),
-                            familyError = false
+                            familyError = false,
+                            familyErrorDetail = ""
                         )
                     }
                 } else {
@@ -755,14 +894,23 @@ class FamilyViewModel(
                             // first round can still have later matches.
                             rowsHasMore = list.isNotEmpty() ||
                                 (filter.version.isNotEmpty() && phimVersionRawMore),
-                            familyError = false
+                            familyError = false,
+                            familyErrorDetail = ""
                         )
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // V2 (0.4): a failed Phim load is an error state, not a
-                // silently empty tab.
-                _state.update { it.copy(loading = false, familyError = true) }
+                // silently empty tab. 1.3.3: real error text attached.
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        familyError = true,
+                        familyErrorDetail = describeError(e)
+                    )
+                }
             }
         }
     }
@@ -1057,9 +1205,19 @@ class FamilyViewModel(
                         familyError = false
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // V2 (0.4): a failed browse load is an error state.
-                _state.update { it.copy(loading = false, familyError = true) }
+                // 1.3.3: with the real error text attached, so the
+                // family error block never shows a stale detail.
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        familyError = true,
+                        familyErrorDetail = describeError(e)
+                    )
+                }
             }
         }
     }
@@ -1084,7 +1242,9 @@ class FamilyViewModel(
     }
 
     private fun loadManhwaLists() {
-        _state.update { it.copy(loading = true, rowsPage = 1, familyError = false) }
+        _state.update {
+            it.copy(loading = true, rowsPage = 1, familyError = false, familyErrorDetail = "")
+        }
         viewModelScope.launch {
             try {
                 when {
@@ -1129,21 +1289,93 @@ class FamilyViewModel(
                             )
                         }
                     }
-                    else -> {
-                        val posters = app.netTruyen.hot(1)
-                        val rows = app.netTruyen.latest(1)
-                        app.database.titleDao().upsertAll((posters + rows).map { it.toEntity() })
-                        _state.update {
-                            it.copy(
-                                loading = false, posters = posters, rows = rows,
-                                rowsPage = 1, rowsHasMore = true
-                            )
-                        }
-                    }
+                    else -> loadManhwaDefaultShelves()
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // V2 (0.4): a failed Manhwa load is an error state.
-                _state.update { it.copy(loading = false, familyError = true) }
+                // 1.3.3: with the real error text attached.
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        familyError = true,
+                        familyErrorDetail = describeError(e)
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 1.3.3: the Manhwa default lists as TWO independent shelf loads —
+     * each with its own time budget and its own state update, so a
+     * hanging "Đang hot" shelf can no longer stall "Mới cập nhật"
+     * behind it (1.3.2 loaded them sequentially inside one try, under
+     * no total budget at all). A single failed shelf degrades alone;
+     * familyError is raised only when BOTH fail, with the first real
+     * error text kept for the error block.
+     */
+    private fun loadManhwaDefaultShelves() {
+        var settled = 0
+        var failures = 0
+        var firstError = ""
+        fun onShelfSettled(error: String?) {
+            settled++
+            if (error != null) {
+                failures++
+                if (firstError.isBlank()) firstError = error
+            }
+            if (settled == 2) {
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        familyError = failures == 2,
+                        familyErrorDetail = if (failures == 2) firstError else ""
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            val posters = try {
+                withTimeoutOrNull(MANHWA_SHELF_BUDGET_MS) { app.netTruyen.hot(1) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onShelfSettled(describeError(e))
+                return@launch
+            }
+            if (posters == null) {
+                onShelfSettled(
+                    "NetTruyen: quá ${MANHWA_SHELF_BUDGET_MS / 1000} giây " +
+                        "không phản hồi (kệ Đang hot)"
+                )
+            } else {
+                app.database.titleDao().upsertAll(posters.map { it.toEntity() })
+                _state.update { it.copy(loading = false, posters = posters) }
+                onShelfSettled(null)
+            }
+        }
+        viewModelScope.launch {
+            val rows = try {
+                withTimeoutOrNull(MANHWA_SHELF_BUDGET_MS) { app.netTruyen.latest(1) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onShelfSettled(describeError(e))
+                return@launch
+            }
+            if (rows == null) {
+                onShelfSettled(
+                    "NetTruyen: quá ${MANHWA_SHELF_BUDGET_MS / 1000} giây " +
+                        "không phản hồi (kệ Mới cập nhật)"
+                )
+            } else {
+                app.database.titleDao().upsertAll(rows.map { it.toEntity() })
+                _state.update {
+                    it.copy(loading = false, rows = rows, rowsPage = 1, rowsHasMore = true)
+                }
+                onShelfSettled(null)
             }
         }
     }
@@ -1183,12 +1415,20 @@ class FamilyViewModel(
                 System.currentTimeMillis() - builtAt > 7L * 24 * 3600 * 1000
             if (!stale) return@launch
             _state.update { it.copy(manhwaIndexBuilding = true) }
+            // 1.3.3: the build gets a TOTAL budget — on timeout the old
+            // cache is kept and manhwaIndexBuilding ALWAYS clears below
+            // (a dripping TruyenQQ page used to wedge the flag forever,
+            // leaving "Đang lập chỉ mục thể loại…" on screen for good).
             val built = try {
-                ManhwaIndex.build(app.truyenQq)
+                withTimeoutOrNull(MANHWA_INDEX_BUDGET_MS) {
+                    ManhwaIndex.build(app.truyenQq)
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                emptyList()
+                null
             }
-            if (built.isNotEmpty()) {
+            if (!built.isNullOrEmpty()) {
                 manhwaIndex = built
                 app.settings.setManhwaIndex(ManhwaIndex.toJson(built))
                 _state.update { it.copy(manhwaIndexReady = true, manhwaIndexBuilding = false) }
@@ -1208,6 +1448,11 @@ class FamilyViewModel(
         truyenCompletedSlugs?.let { return it }
         val set = try {
             app.truyenQq.completedSlugs()
+        } catch (e: CancellationException) {
+            // 1.3.3: the selectContext total budget must be able to
+            // abort this harvest — swallowing its cancellation would
+            // hand back an empty set and silently un-filter the list.
+            throw e
         } catch (e: Exception) {
             emptySet()
         }

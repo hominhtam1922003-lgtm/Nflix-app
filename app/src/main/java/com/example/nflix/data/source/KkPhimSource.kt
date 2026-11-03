@@ -25,34 +25,41 @@ class KkPhimSource(
         private const val BASE = "https://phimapi.com"
         private const val CDN = "https://phimimg.com"
 
-        /** Category (label to slug) for the Phim filter sheet — KKPhim /v1/api/the-loai, verified live 2026-11-01. */
+        /**
+         * Category (label to slug) for the Phim filter sheet — KKPhim
+         * /v1/api/the-loai. 1.3.3: replaced with the exact 26-genre
+         * menu of kkphim.com, re-verified live against phimapi.com on
+         * 2026-11-03 (user order 09:44 — every slug live with real
+         * titles; labels and order exactly as the KK menu shows them).
+         * Each chip calls /v1/api/the-loai/{slug} via byCategory.
+         */
         val CATEGORIES = listOf(
-            "Hành động" to "hanh-dong",
-            "Tình cảm" to "tinh-cam",
-            "Hài hước" to "hai-huoc",
-            "Tâm lý" to "tam-ly",
-            "Hình sự" to "hinh-su",
-            "Chiến tranh" to "chien-tranh",
-            "Phiêu lưu" to "phieu-luu",
-            "Võ thuật" to "vo-thuat",
-            "Cổ trang" to "co-trang",
-            "Kinh dị" to "kinh-di",
-            "Viễn tưởng" to "vien-tuong",
-            "Khoa học" to "khoa-hoc",
-            "Thần thoại" to "than-thoai",
-            "Học đường" to "hoc-duong",
-            "Gia đình" to "gia-dinh",
-            "Bí ẩn" to "bi-an",
-            "Kinh điển" to "kinh-dien",
-            "Chính kịch" to "chinh-kich",
-            "Lịch sử" to "lich-su",
+            "Bí Ẩn" to "bi-an",
+            "Chiến Tranh" to "chien-tranh",
+            "Chính Kịch" to "chinh-kich",
+            "Cổ Trang" to "co-trang",
+            "Gia Đình" to "gia-dinh",
+            "Hài Hước" to "hai-huoc",
+            "Hành Động" to "hanh-dong",
+            "Hình Sự" to "hinh-su",
+            "Học Đường" to "hoc-duong",
+            "Khoa Học" to "khoa-hoc",
+            "Kinh Dị" to "kinh-di",
+            "Kinh Điển" to "kinh-dien",
+            "Lịch Sử" to "lich-su",
             "Miền Tây" to "mien-tay",
-            "Thể thao" to "the-thao",
-            "Trẻ em" to "tre-em",
-            "Âm nhạc" to "am-nhac",
-            "Tài liệu" to "tai-lieu",
-            "Phim ngắn" to "phim-ngan",
-            "Phim 18+" to "phim-18"
+            "Phiêu Lưu" to "phieu-luu",
+            "Thần Thoại" to "than-thoai",
+            "Thể Thao" to "the-thao",
+            "Trẻ Em" to "tre-em",
+            "Tài Liệu" to "tai-lieu",
+            "Tâm Lý" to "tam-ly",
+            "Tình Cảm" to "tinh-cam",
+            "Phim 18+" to "phim-18",
+            "Phim Ngắn" to "phim-ngan",
+            "Viễn Tưởng" to "vien-tuong",
+            "Võ Thuật" to "vo-thuat",
+            "Âm Nhạc" to "am-nhac"
         )
 
         /** Country (label to slug) for the Phim filter sheet — KKPhim /v1/api/quoc-gia, verified live 2026-11-01. */

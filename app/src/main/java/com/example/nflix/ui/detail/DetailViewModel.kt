@@ -91,9 +91,10 @@ class DetailViewModel(
         viewModelScope.launch {
             try {
                 val rawDetail = when (item.sourceId) {
-                    // Đợt 4: Phim/Anime go through the merged front
-                    // (KKPhim + Cobe server groups); cobe-only titles
-                    // route inside detailFor to the pure cobe detail.
+                    // 1.3.3: Phim/Anime go through the routing front —
+                    // Phim is KKPhim-only inside detailFor (whatever
+                    // sourceId the item carries); Anime keeps its
+                    // Cobe-first law there.
                     "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)

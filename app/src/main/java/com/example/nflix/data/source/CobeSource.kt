@@ -7,6 +7,7 @@ import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -120,6 +121,9 @@ class CobeSource(
         )
         private val STREAMVSMOV = Regex("""(https?://[\w.\-]*streamvsmov\.com)/video/([\w\-]+)""")
         private val DARKBYTES_HOST = Regex("""([A-Za-z0-9]+)\.darkbytes\.xyz""")
+
+        /** Status code out of getText's "Cobe HTTP <code> (<url>)" message. */
+        private val COBE_HTTP_CODE = Regex("""Cobe HTTP (\d{3})""")
         private val JS_CHUNK = Regex("""/_next/static/chunks/[\w.\-]+\.js""")
     }
 
@@ -136,6 +140,14 @@ class CobeSource(
 
     @Volatile
     private var discoveryCached: Boolean = false
+
+    // 1.3.3: the last host that got a FORCED fresh discovery after an
+    // HTTP failure, and when — bounds forced scans (see getApiText).
+    @Volatile
+    private var forcedHealHost: String? = null
+
+    @Volatile
+    private var forcedHealAtMs: Long = 0L
 
     private suspend fun apiBase(): String {
         apiBaseCache?.let { return it }
@@ -167,18 +179,29 @@ class CobeSource(
         try {
             return getText(base + path)
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Log.w(TAG, "Cobe API call failed ($path via $base): ${e.message}")
-            // 1.3.2: a 502 means the gateway in front of this API host
-            // is dead (measured 2026-11-03: the saved host AND the
-            // fallback host both 502 while the origin was down). Forget
-            // the host — drop the in-memory cache and the SAVED host —
-            // so the next apiBase() re-runs discovery instead of every
-            // later call paying the dead-host toll first.
-            if (e.message?.contains("Cobe HTTP 502") == true) {
+            // 1.3.3: ANY HTTP error status from the current host — not
+            // just the 502 of the 2026-11-03 outage that 1.3.2 handled —
+            // counts as "this host may be dead or rotated": forget it
+            // (drop the in-memory cache AND the saved host) and
+            // rediscover FRESH, bypassing the 10-minute discovery cache
+            // (which may be holding a null from the outage). A rotated
+            // host answering 404 for everything (the user's device,
+            // 2026-11-03: every film detail "Cobe HTTP 404") previously
+            // stuck forever: the saved host survives restarts and was
+            // only ever forgotten on 502. Non-HTTP failures (DNS,
+            // timeouts) keep the old cached-discovery heal. Still at
+            // most ONE retry, exactly as before.
+            val httpCode = COBE_HTTP_CODE.find(e.message ?: "")
+                ?.groupValues?.get(1)?.toIntOrNull()
+            val found = if (httpCode != null && httpCode in 400..599) {
                 if (apiBaseCache == base) apiBaseCache = null
                 runCatching { settings?.setCobeApiHost("") }
+                discoverAfterHostDeath(base)
+            } else {
+                discoverApiBaseCached()
             }
-            val found = discoverApiBaseCached()
             if (found != null && found != base) {
                 apiBaseCache = found
                 runCatching { settings?.setCobeApiHost(found) }
@@ -186,6 +209,27 @@ class CobeSource(
             }
             throw e
         }
+    }
+
+    /**
+     * 1.3.3: fresh discovery after an HTTP host failure, bypassing the
+     * TTL cache — but at most once per failed host per TTL window, so
+     * a healthy host with a genuinely missing title (a title-level
+     * 404) cannot make every later call pay a full rescan. The outcome
+     * always refreshes the regular discovery cache.
+     */
+    private suspend fun discoverAfterHostDeath(failedBase: String): String? {
+        val now = System.currentTimeMillis()
+        if (forcedHealHost == failedBase && now - forcedHealAtMs < DISCOVERY_TTL_MS) {
+            return discoveryCachedResult
+        }
+        forcedHealHost = failedBase
+        forcedHealAtMs = now
+        val found = discoverApiBase()
+        discoveryCachedResult = found
+        discoveryCachedAtMs = System.currentTimeMillis()
+        discoveryCached = true
+        return found
     }
 
     /** discoverApiBase() behind the TTL cache — see DISCOVERY_TTL_MS (N2). */

@@ -55,9 +55,10 @@ class NewEpisodeWorker(
             val item = entity.toItem()
             val total = runCatching {
                 val detail = when (item.sourceId) {
-                    // Đợt 4: Phim/Anime totals come from the MERGED pool —
-                    // when cobe releases an episode first, the bell catches
-                    // it. Baseline/seen semantics are unchanged.
+                    // 1.3.3: Phim/Anime totals come from detailFor —
+                    // KKPhim counts for Phim, the Cobe-first Anime
+                    // detail for Anime. Baseline/seen semantics are
+                    // unchanged.
                     "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)

@@ -372,56 +372,9 @@ fun SearchScreen(
                     }
                 }
             }
-            // V2 (0.5, sheet frame 8): "Đang được tìm nhiều" = the REAL
-            // Cobe view-day chart — ranked title rows that open the
-            // title itself. The old block was 5 hand-written keywords
-            // with hand-set 🔥 (leftover K14) — gone.
-            if (state.trending.isNotEmpty()) {
-                item {
-                    Column {
-                        Text(
-                            "Đang được tìm nhiều",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
-                        )
-                        state.trending.forEachIndexed { index, title ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth()
-                                    .clickable { onOpenTitle(title) }
-                                    .padding(horizontal = 16.dp, vertical = 9.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "${index + 1}",
-                                    color = NflixViolet,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.width(28.dp)
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        title.name,
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        maxLines = 1
-                                    )
-                                    if (title.viewCount > 0) {
-                                        Text(
-                                            "${formatViewCount(title.viewCount)} lượt xem hôm nay",
-                                            color = NflixTextMuted,
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                }
-                                FamilyTag(title.family.label)
-                            }
-                        }
-                        Spacer(Modifier.height(24.dp))
-                    }
-                }
-            }
+            // 1.3.3: the V2 "Đang được tìm nhiều" strip (Cobe view_day
+            // chart) is removed — see SearchViewModel. Nothing replaces
+            // it: KKPhim publishes no view counts to rank by.
         } else {
             if (state.searching && state.suggestions.isEmpty()) {
                 item {

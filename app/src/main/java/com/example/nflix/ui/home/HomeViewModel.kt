@@ -8,6 +8,7 @@ import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
 import com.example.nflix.data.toItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,10 +46,13 @@ data class HomeUiState(
      * still just hides, as before.
      */
     val loadError: Boolean = false,
-    /** V2 (A3): Cobe editorial collections for the "Bộ sưu tập" shelf. */
-    val collections: List<com.example.nflix.data.source.CobeCollection> = emptyList(),
-    /** The collection whose grid is open (set when its card is tapped). */
-    val selectedCollection: com.example.nflix.data.source.CobeCollection? = null,
+    /**
+     * 1.3.3: the REAL error text behind [loadError] — the first
+     * failure message the hero/latest/suggested loaders kept (1.3.2
+     * reduced every failure to a boolean, so the Home error block
+     * could only print a canned "check your connection" line).
+     */
+    val loadErrorDetail: String = "",
     /**
      * 1.3.1: ids of the titles currently flagged Xem sau. The hero's
      * "Xem sau" button reads this to show its saved state — before
@@ -73,7 +77,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         loadShelves()
         loadToday()
         loadForYou()
-        loadCollections()
         viewModelScope.launch {
             nflix.settings.flow.collect { s ->
                 // One-time 1.1.0 merge: lists saved before 1.1.0 lack the
@@ -114,12 +117,24 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private var latestFailed = false
     private var suggestedFailed = false
 
+    /** 1.3.3: first real error text seen by the three tracked loaders. */
+    private var loadErrorDetailText: String = ""
+
+    private fun noteLoadError(e: Exception) {
+        if (loadErrorDetailText.isBlank()) {
+            loadErrorDetailText = e.message?.takeIf { it.isNotBlank() }
+                ?: e.javaClass.simpleName
+        }
+    }
+
     private fun refreshLoadError() {
         _state.update { st ->
+            val failed = heroFailed && latestFailed && suggestedFailed &&
+                st.hero == null && st.latestList.isEmpty() &&
+                st.suggestedList.isEmpty()
             st.copy(
-                loadError = heroFailed && latestFailed && suggestedFailed &&
-                    st.hero == null && st.latestList.isEmpty() &&
-                    st.suggestedList.isEmpty()
+                loadError = failed,
+                loadErrorDetail = if (failed) loadErrorDetailText else ""
             )
         }
     }
@@ -129,25 +144,28 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         heroFailed = false
         latestFailed = false
         suggestedFailed = false
-        _state.update { it.copy(loading = true, loadError = false) }
+        loadErrorDetailText = ""
+        _state.update { it.copy(loading = true, loadError = false, loadErrorDetail = "") }
         loadHero()
         loadShelves()
         loadToday()
         loadForYou()
-        loadCollections()
     }
 
     private fun loadShelves() {
-        // 1.2.0 (Khối A): Home's Phim shelves read the MERGED catalog
-        // (KKPhim + Cobe union) like the Phim tab does.
+        // Home's Phim shelves read the same catalog as the Phim tab
+        // (KKPhim only since 1.3.3).
         viewModelScope.launch {
             try {
                 val latest = nflix.mergedPhim.latestMerged(page = 1)
                 db.titleDao().upsertAll(latest.map { it.toEntity() })
                 latestFailed = false
                 _state.update { it.copy(latestList = latest) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 latestFailed = true
+                noteLoadError(e)
             }
             refreshLoadError()
         }
@@ -157,44 +175,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 db.titleDao().upsertAll(suggested.map { it.toEntity() })
                 suggestedFailed = false
                 _state.update { it.copy(suggestedList = suggested) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 suggestedFailed = true
+                noteLoadError(e)
             }
             refreshLoadError()
         }
-    }
-
-    /**
-     * V2 (A3): the "Bộ sưu tập" shelf — Cobe's editorial homepage
-     * collections. Lists duplicating shelves Home already has (charts,
-     * sắp chiếu, chiếu rạp, phim lẻ/bộ rails, mới nhất) are dropped by
-     * name; the rest render as wide cards (name + real title count)
-     * opening the collection's own grid. A Cobe failure just hides the
-     * shelf — Home's other content is unaffected.
-     */
-    private fun loadCollections() {
-        viewModelScope.launch {
-            try {
-                val dupHints = listOf(
-                    "top", "hot", "xem nhiều", "bảng xếp hạng", "sắp chiếu",
-                    "chiếu rạp", "phim lẻ", "phim bộ", "mới nhất", "mới cập nhật",
-                    "đang chiếu", "thịnh hành"
-                )
-                val cols = nflix.cobe.homepageLists().filter { c ->
-                    c.items.size >= 4 &&
-                        dupHints.none { hint -> c.name.lowercase().contains(hint) }
-                }.take(8)
-                if (cols.isNotEmpty()) {
-                    db.titleDao().upsertAll(cols.flatMap { it.items }.map { it.toEntity() })
-                    _state.update { it.copy(collections = cols) }
-                }
-            } catch (e: Exception) { /* shelf stays hidden */ }
-        }
-    }
-
-    /** V2 (A3): remember which collection the user opened for its grid. */
-    fun selectCollection(c: com.example.nflix.data.source.CobeCollection) {
-        _state.update { it.copy(selectedCollection = c) }
     }
 
     /**
@@ -257,7 +245,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         try {
             when (item.sourceId) {
                 "kkphim" -> nflix.kkPhim.detail(item.slug).genreLinks
-                "cobe" -> nflix.cobe.detail(item.slug, item.family).genreLinks
+                // 1.3.3: a PHIM item saved with a Cobe identity takes
+                // its genre links from KKPhim (Phim is KK-only now);
+                // ANIME items keep reading Cobe (their own law).
+                "cobe" -> if (item.family == Family.ANIME) {
+                    nflix.cobe.detail(item.slug, item.family).genreLinks
+                } else {
+                    nflix.kkPhim.detail(item.slug).genreLinks
+                }
                 "hhkungfu" -> nflix.hhKungfu.detail(item.slug).genreLinks
                 "nettruyen" -> nflix.netTruyen.detail(item.slug).genreLinks
                 "truyenqq" -> nflix.truyenQq.detail(item.slug, item.family).genreLinks
@@ -343,8 +338,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(loading = false, hero = trending.firstOrNull(), heroList = trending.take(8))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 heroFailed = true
+                noteLoadError(e)
                 _state.update { it.copy(loading = false) }
             }
             refreshLoadError()

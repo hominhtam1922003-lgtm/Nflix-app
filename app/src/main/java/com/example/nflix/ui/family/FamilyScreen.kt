@@ -332,7 +332,12 @@ fun FamilyScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Cả hai host đều không phản hồi — kiểm tra mạng rồi thử lại.",
+                        // 1.3.3: the REAL error (which sources were
+                        // tried + what each answered) instead of the
+                        // canned line that hid it in 1.3.2.
+                        state.truyenErrorDetail.ifBlank {
+                            "Cả hai host đều không phản hồi — kiểm tra mạng rồi thử lại."
+                        },
                         color = NflixTextMuted,
                         fontSize = 12.sp
                     )
@@ -365,7 +370,11 @@ fun FamilyScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Kiểm tra kết nối mạng rồi thử lại.",
+                        // 1.3.3: real error text when the ViewModel
+                        // kept one (see FamilyUiState.familyErrorDetail).
+                        state.familyErrorDetail.ifBlank {
+                            "Kiểm tra kết nối mạng rồi thử lại."
+                        },
                         color = NflixTextMuted,
                         fontSize = 12.sp
                     )

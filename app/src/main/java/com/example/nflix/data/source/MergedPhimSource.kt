@@ -1,33 +1,30 @@
 package com.example.nflix.data.source
 
-import android.util.Log
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.model.matchesStatus
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Merged front for the Phim/Anime families (đợt 4): one title, one card —
- * KKPhim stays the identity and the primary server block, CobePhim rides
- * along as extra server groups (labeled " · Cobe") and can push the
- * released-episode count higher, which is what the "Có tập mới" worker
- * and the pills consume. Slugs match 1:1 between the two catalogs.
+ * Routing front for the Phim/Anime families. The name is a leftover
+ * from the merged-catalog era (≤1.3.2, when a Phim title's detail
+ * combined KKPhim + Cobe server groups).
  *
- * Failure rule: cobe must never break the KKPhim path — a cobe error or
- * a title cobe does not carry simply yields the plain KKPhim detail,
- * and a KKPhim error falls back to the cobe detail (cobe-only titles
- * reached through a KKPhim-shaped id still open).
+ * 1.3.3 (user order 2026-11-03 09:42): PHIM IS KKPHIM-ONLY. Cobe is
+ * removed from every Phim path — catalog lists, search surfaces, the
+ * filter sheet, detail, episodes and playback routing — after the
+ * 1.3.2 device verdict showed Cobe errors ("Cobe HTTP 404") killing
+ * detail pages for titles KKPhim carries fine. A Phim item an older
+ * build saved with a Cobe identity re-homes onto KKPhim here: the
+ * slugs match 1:1, and a title KKPhim does not carry fails with
+ * KKPhim's own error instead of a Cobe one.
  *
- * 1.1.1 (N1/N2): "never break" no longer means "fail silently". When the
- * cobe SOURCE is unreachable (as opposed to simply not carrying the
- * title), the returned detail is flagged [TitleDetail.cobeFailed] so the
- * UI can say "Nguồn Cobe: không kết nối được" instead of the source
- * vanishing. The cobe branch also runs under a hard time budget so a
- * dead cobe can never drag the KKPhim detail down with it.
+ * ANIME keeps its own law (unchanged): Cobe-first detail via
+ * [animeDetail], with KKPhim's animation groups appended on a slug
+ * match and as the fallback when Cobe cannot serve the title.
+ * Cobe also still powers the actor pages — neither is a Phim path.
  */
 class MergedPhimSource(
     private val kkPhim: KkPhimSource,
@@ -35,35 +32,29 @@ class MergedPhimSource(
 ) {
 
     companion object {
-        private const val TAG = "MergedPhim"
-
-        /** Hard budget for the whole cobe branch of one merged detail. */
+        /** Hard budget for the Cobe call inside an Anime detail. */
         private const val COBE_BUDGET_MS = 6_000L
-
-        /** Cobe pages scanned per filtered-browse page (local filtering horizon). */
-        private const val COBE_LOCAL_SCAN_PAGES = 3
     }
 
-    /** Route by the title's own source: cobe-only titles stay pure cobe. */
+    /**
+     * Route a title to its detail. ANIME items carrying a Cobe
+     * identity go through [animeDetail] (the Anime law is unchanged);
+     * EVERYTHING else — every Phim item included, whatever sourceId an
+     * older build saved on it — is served by KKPhim alone (1.3.3).
+     */
     suspend fun detailFor(item: TitleItem): TitleDetail =
-        if (item.sourceId == CobeSource.SOURCE_ID) {
-            // 1.2.0 (Khối B): an Anime title lives on Cobe, but when
-            // KKPhim carries the same slug as hoạt hình its server groups
-            // join too — the user ordered ALL groups collected (Vietsub /
-            // Thuyết minh / Lồng tiếng / Song ngữ), none dropped.
-            if (item.family == Family.ANIME) animeDetail(item)
-            else cobeDetailBounded(item.slug, item.family)
+        if (item.sourceId == CobeSource.SOURCE_ID && item.family == Family.ANIME) {
+            animeDetail(item)
         } else {
-            detail(item.slug, item.family)
+            kkPhim.detail(item.slug)
         }
 
     /**
-     * 1.3.2: the cobe-only path under the SAME hard budget as the
-     * merged branch ([fetchCobe]). It used to call cobe.detail()
-     * directly with no ceiling at all: when Cobe died (502 / the
-     * homepage slow-dripping through host rediscovery), Player init
-     * hung forever on "Đang tải…" with an empty episode sheet
-     * (measured 2026-11-03, dossier phim-0-tap branch D).
+     * The Cobe call of an Anime detail under a hard budget (kept from
+     * 1.3.2). It used to run with no ceiling at all: when Cobe died
+     * (502 / the homepage slow-dripping through host rediscovery),
+     * Player init hung forever on "Đang tải…" with an empty episode
+     * sheet (measured 2026-11-03, dossier phim-0-tap branch D).
      */
     private suspend fun cobeDetailBounded(slug: String, family: Family): TitleDetail =
         withTimeoutOrNull(COBE_BUDGET_MS) { cobe.detail(slug, family) }
@@ -79,7 +70,29 @@ class MergedPhimSource(
     private suspend fun animeDetail(item: TitleItem): TitleDetail {
         // 1.3.2: bounded like every other cobe entry point (see
         // cobeDetailBounded) — Anime details start from Cobe too.
-        val cb = cobeDetailBounded(item.slug, Family.ANIME)
+        // 1.3.3: a Cobe failure no longer kills the page on the spot —
+        // when KKPhim carries the same slug as animation with real
+        // server groups, its detail serves instead; only when KKPhim
+        // cannot serve it either does the Cobe error propagate.
+        val cb = try {
+            cobeDetailBounded(item.slug, Family.ANIME)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val kkFallback = try {
+                kkPhim.detail(item.slug)
+            } catch (e2: CancellationException) {
+                throw e2
+            } catch (e2: Exception) {
+                null
+            }
+            if (kkFallback != null && kkFallback.item.family == Family.ANIME &&
+                kkFallback.servers.isNotEmpty()
+            ) {
+                return kkFallback
+            }
+            throw e
+        }
         val kk = runCatching { kkPhim.detail(item.slug) }.getOrNull()
             ?: return cb
         if (kk.item.family != Family.ANIME || kk.servers.isEmpty()) return cb
@@ -103,71 +116,31 @@ class MergedPhimSource(
         )
     }
 
-    suspend fun detail(slug: String, familyHint: Family = Family.PHIM): TitleDetail = coroutineScope {
-        val kkDeferred = async { runCatching { kkPhim.detail(slug) }.getOrNull() }
-        val cobeDeferred = async { fetchCobe(slug, familyHint) }
-        val kk = kkDeferred.await()
-        val cobeOutcome = cobeDeferred.await()
-        val cb = cobeOutcome.detail
-        when {
-            kk == null && cb == null ->
-                throw IllegalStateException("Không tải được chi tiết từ cả hai nguồn")
-            kk == null -> cb!!
-            cb == null -> kk.copy(cobeFailed = cobeOutcome.failed)
-            else -> merge(kk, cb)
-        }
-    }
-
     // ------------------------------------------------------------------
-    // Merged LISTS (1.2.0, Khối A): the Phim catalog is the UNION of both
-    // sources — Cobe-only titles are first-class citizens of the tab, not
-    // just extra servers on KKPhim titles. Dedupe by slug; the KKPhim
-    // copy keeps the identity when both carry a title (its detail is the
-    // merged one anyway). Cobe lists come from its web pages (the API
-    // list endpoints are token-locked).
+    // PHIM LISTS: KKPhim only since 1.3.3 (the 1.2.0 union with Cobe's
+    // web lists is gone, per the same user order). The *Merged names
+    // are kept so every caller (Home, Phim tab) stays untouched.
     // ------------------------------------------------------------------
 
-    private fun union(pages: List<List<TitleItem>>): List<TitleItem> {
-        val bySlug = LinkedHashMap<String, TitleItem>()
-        for (page in pages) {
-            for (item in page) {
-                val cur = bySlug[item.slug]
-                if (cur == null ||
-                    (cur.sourceId != KkPhimSource.SOURCE_ID && item.sourceId == KkPhimSource.SOURCE_ID)
-                ) {
-                    bySlug[item.slug] = item
-                }
-            }
-        }
-        return bySlug.values.sortedByDescending { it.updatedEpochSec }
-    }
+    /** Newest-updated Phim feed — KKPhim's latest list, nothing else. */
+    suspend fun latestMerged(page: Int): List<TitleItem> = kkPhim.latest(page)
 
-    /** Newest-updated Phim feed: KKPhim latest + Cobe series + Cobe movies of the same page. */
-    suspend fun latestMerged(page: Int): List<TitleItem> = coroutineScope {
-        val kkD = async { runCatching { kkPhim.latest(page) }.getOrDefault(emptyList()) }
-        val boD = async { runCatching { cobe.kindPage("phim-bo", page).first }.getOrDefault(emptyList()) }
-        val leD = async { runCatching { cobe.kindPage("phim-le", page).first }.getOrDefault(emptyList()) }
-        union(listOf(kkD.await(), boD.await(), leD.await()))
-    }
-
-    /** Kind listing (phim-bo / phim-le) merged across both sources. */
-    suspend fun byKindMerged(kind: String, page: Int, limit: Int = 24): List<TitleItem> = coroutineScope {
+    /** Kind listing (phim-bo / phim-le / chieu-rap) from KKPhim only. */
+    suspend fun byKindMerged(kind: String, page: Int, limit: Int = 24): List<TitleItem> =
         if (kind == "chieu-rap") {
-            // Chiếu rạp is a KKPhim flag concept; Cobe has no such list.
-            return@coroutineScope kkPhim.cinema(page, limit)
+            kkPhim.cinema(page, limit)
+        } else {
+            kkPhim.listByKind(kind, page, limit)
         }
-        val kkD = async { runCatching { kkPhim.listByKind(kind, page, limit) }.getOrDefault(emptyList()) }
-        val cbD = async { runCatching { cobe.kindPage(kind, page).first }.getOrDefault(emptyList()) }
-        union(listOf(kkD.await(), cbD.await())).take(limit + 16)
-    }
 
     /**
-     * Filtered Phim browse: KKPhim filters server-side; the Cobe side is
-     * filtered LOCALLY over its kind pages (its API list is token-locked
-     * and its web pages carry full records). Genre matches on the shared
-     * Vietnamese category NAME (the slug systems differ: Cobe "hai" vs
-     * KKPhim "hai-huoc"); Cobe has no country field, so a country filter
-     * narrows only the KKPhim side. Status matches on derived counts.
+     * Filtered Phim browse, KKPhim only (1.3.3): with a kind set, the
+     * API filters server-side (category/country/year are real params);
+     * with only a category set, the dedicated /the-loai/{slug} listing
+     * serves it; with neither, the newest-updated pages accumulate
+     * (country/year facets alone have no KK listing — the same
+     * looseness the merged era had on its KKPhim side). The status
+     * facet matches locally on derived counts, as before.
      */
     suspend fun filteredMerged(
         kind: String,
@@ -177,107 +150,15 @@ class MergedPhimSource(
         status: Int = 0,
         page: Int = 1,
         limit: Int = 24
-    ): List<TitleItem> = coroutineScope {
-        val kkD = async {
-            runCatching {
+    ): List<TitleItem> {
+        val base = when {
+            kind.isNotEmpty() ->
                 kkPhim.listFiltered(kind, category, country, year, page, limit)
-            }.getOrDefault(emptyList()).filter { it.matchesStatus(status) }
+            category.isNotEmpty() ->
+                kkPhim.byCategory(category, page, limit)
+            else ->
+                (1..page).flatMap { p -> kkPhim.latest(p) }.distinctBy { it.slug }
         }
-        val categoryName = KkPhimSource.CATEGORIES.firstOrNull { it.second == category }?.first
-        val cbD = async {
-            if (page > COBE_LOCAL_SCAN_PAGES) {
-                emptyList()
-            } else {
-                runCatching { cobe.kindPage(kind, page).first }.getOrDefault(emptyList())
-                    .filter { item ->
-                        (category.isEmpty() ||
-                            item.genreSlugs.contains(category) ||
-                            (categoryName != null && item.genres.any {
-                                it.equals(categoryName, ignoreCase = true)
-                            })) &&
-                            (year == 0 || item.year == year) &&
-                            item.matchesStatus(status)
-                    }
-            }
-        }
-        union(listOf(kkD.await(), cbD.await()))
-    }
-
-    /** Outcome of the cobe branch: the detail (if any) + whether the source itself failed. */
-    private class CobeOutcome(val detail: TitleDetail?, val failed: Boolean)
-
-    /**
-     * Cobe under a hard budget. A timeout counts as a source failure; an
-     * HTTP 404 / empty movie payload means cobe simply does not carry
-     * this title — that is NOT flagged, the KKPhim detail stays clean.
-     */
-    private suspend fun fetchCobe(slug: String, familyHint: Family): CobeOutcome {
-        val detail = try {
-            withTimeoutOrNull(COBE_BUDGET_MS) { cobe.detail(slug, familyHint) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val notCarried = isNotCarried(e)
-            if (!notCarried) {
-                Log.w(TAG, "Cobe detail failed for slug=$slug: ${e.message}")
-            }
-            return CobeOutcome(null, failed = !notCarried)
-        }
-        return if (detail != null) {
-            CobeOutcome(detail, failed = false)
-        } else {
-            Log.w(TAG, "Cobe detail timed out for slug=$slug")
-            CobeOutcome(null, failed = true)
-        }
-    }
-
-    /** "Cobe does not have this title" signals, per CobeSource's error shapes. */
-    private fun isNotCarried(e: Throwable): Boolean {
-        val msg = e.message ?: return false
-        return msg.contains("Cobe HTTP 404") || msg.contains("Cobe: no movie")
-    }
-
-    private fun merge(kk: TitleDetail, cb: TitleDetail): TitleDetail {
-        val servers = kk.servers + cb.servers
-        // Released total on the MERGED server pool, counted the same way
-        // each adapter counts its own: highest episode number present.
-        val released = servers.maxOfOrNull { g ->
-            g.episodes.maxOfOrNull { it.number } ?: 0f
-        }?.toInt() ?: 0
-        val total = maxOf(kk.totalCount, cb.totalCount, released)
-        val badge = when {
-            servers.any { it.langKey == "tm" } -> "TM"
-            servers.any { it.langKey == "vs" } -> "VS"
-            else -> kk.item.versionBadge
-        }
-        val item = kk.item.copy(
-            episodeCount = maxOf(kk.item.episodeCount, total),
-            versionBadge = badge,
-            // When cobe is ahead, the card must say so. Only numbered
-            // series labels are rewritten — a movie keeps its "Full".
-            latestLabel = if (total > kk.totalCount && total > 0 &&
-                kk.item.latestLabel.startsWith("Tập", ignoreCase = true)
-            ) {
-                "Tập $total"
-            } else {
-                kk.item.latestLabel
-            },
-            updatedEpochSec = maxOf(kk.item.updatedEpochSec, cb.item.updatedEpochSec)
-        )
-        return TitleDetail(
-            item = item,
-            description = kk.description.ifBlank { cb.description },
-            status = kk.status.ifBlank { cb.status },
-            totalCount = total,
-            durationLabel = kk.durationLabel.ifBlank { cb.durationLabel },
-            actors = kk.actors.ifEmpty { cb.actors },
-            // V2 (A5): the Cobe record is the one carrying actor page
-            // slugs/thumbs — keep its refs whichever side owns the names.
-            actorRefs = cb.actorRefs,
-            directors = kk.directors.ifEmpty { cb.directors },
-            servers = servers,
-            trailerUrl = kk.trailerUrl.ifBlank { cb.trailerUrl },
-            genreLinks = kk.genreLinks.ifEmpty { cb.genreLinks }
-        )
+        return base.filter { it.matchesStatus(status) }
     }
 }

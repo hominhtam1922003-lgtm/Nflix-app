@@ -129,18 +129,6 @@ fun HomeScreen(
             )
             return
         }
-        "collection" -> {
-            // V2 (A3): the tapped Cobe collection opens as a plain grid.
-            val col = state.selectedCollection
-            TitleGridScreen(
-                title = col?.name ?: "Bộ sưu tập",
-                items = col?.items ?: emptyList(),
-                onBack = { showAll = null },
-                onOpenTitle = onOpenTitle,
-                modifier = modifier
-            )
-            return
-        }
     }
 
     LazyColumn(modifier = modifier.fillMaxSize().background(NflixBackground)) {
@@ -214,7 +202,11 @@ fun HomeScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Kiểm tra kết nối mạng rồi thử lại.",
+                        // 1.3.3: real error text when the ViewModel
+                        // kept one (see HomeUiState.loadErrorDetail).
+                        state.loadErrorDetail.ifBlank {
+                            "Kiểm tra kết nối mạng rồi thử lại."
+                        },
                         color = NflixTextMuted,
                         fontSize = 13.sp
                     )
@@ -302,48 +294,10 @@ fun HomeScreen(
             }
         }
 
-        // V2 (A3, sheet frame 3): "Bộ sưu tập" — Cobe's editorial
-        // collections as wide cards (real name + real title count from
-        // the source payload). Not a settings shelf: it renders after
-        // the configurable shelves whenever Cobe returned usable lists.
-        if (state.collections.isNotEmpty()) {
-            item {
-                Column(modifier = Modifier.padding(top = 6.dp)) {
-                    SectionHeader("Bộ sưu tập")
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(state.collections, key = { it.name }) { col ->
-                            Column(
-                                modifier = Modifier.width(210.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(NflixSurface)
-                                    .clickable {
-                                        viewModel.selectCollection(col)
-                                        showAll = "collection"
-                                    }
-                                    .padding(14.dp)
-                            ) {
-                                Text(
-                                    col.name,
-                                    color = Color.White,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 2
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "${col.items.size} tựa",
-                                    color = NflixTextMuted,
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // 1.3.3: the V2 "Bộ sưu tập" shelf (Cobe editorial collections)
+        // is REMOVED — Phim is KKPhim-only per user order 2026-11-03
+        // 09:42, and KKPhim publishes no equivalent editorial lists to
+        // replace it with.
 
         item { Spacer(Modifier.height(24.dp)) }
     }

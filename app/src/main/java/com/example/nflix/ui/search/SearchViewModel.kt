@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
-import com.example.nflix.data.toEntity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -31,17 +30,14 @@ data class SearchUiState(
     val suggestions: List<TitleItem> = emptyList(),
     val history: List<String> = emptyList(),
     /**
-     * V2 (0.4): how many of the 5 sources failed the last search.
-     * 5 = nothing could be searched at all (an error, not "no
-     * results"); 1..4 = the screen notes the partial coverage.
+     * V2 (0.4): how many of the 4 sources failed the last search.
+     * 4 = nothing could be searched at all (an error, not "no
+     * results"); 1..3 = the screen notes the partial coverage.
+     * 1.3.3: Cobe left the search pool together with every other
+     * Phim path (user order 09:42) — it only ever contributed
+     * Family.PHIM items, and KKPhim search covers that catalog.
      */
-    val failedSources: Int = 0,
-    /**
-     * V2 (0.5): "Đang được tìm nhiều" — the REAL view chart (Cobe
-     * view_day top titles). Replaces the 5 hand-written keywords with
-     * hand-set 🔥 the sheet round called out (leftover K14).
-     */
-    val trending: List<TitleItem> = emptyList()
+    val failedSources: Int = 0
 )
 
 class SearchViewModel(private val app: NflixApp) : ViewModel() {
@@ -55,20 +51,10 @@ class SearchViewModel(private val app: NflixApp) : ViewModel() {
         viewModelScope.launch {
             app.settings.searchHistory.collect { h -> _state.update { it.copy(history = h) } }
         }
-        // V2 (0.5): the trending section reads the same REAL chart the
-        // Top tab uses (Cobe view_day). A failed load just hides the
-        // section — it never falls back to invented keywords.
-        viewModelScope.launch {
-            try {
-                val chart = app.cobe.searchByViews(weekly = false, limit = 10)
-                if (chart.isNotEmpty()) {
-                    app.database.titleDao().upsertAll(
-                        chart.map { it.toEntity() }
-                    )
-                    _state.update { it.copy(trending = chart) }
-                }
-            } catch (e: Exception) { /* section stays hidden */ }
-        }
+        // 1.3.3: the V2 "Đang được tìm nhiều" strip (Cobe's view_day
+        // chart) is REMOVED with the rest of the Cobe Phim surfaces —
+        // KKPhim publishes no view counts, so there is no honest KK
+        // equivalent to swap in and no invented replacement is shown.
     }
 
     fun setQuery(query: String) {
@@ -117,14 +103,10 @@ class SearchViewModel(private val app: NflixApp) : ViewModel() {
             async { counted { app.kkPhim.search(query) } },
             async { counted { app.hhKungfu.search(query) } },
             async { counted { app.netTruyen.search(query) } },
-            async { counted { app.truyenQq.search(query) } },
-            // Đợt 4: cobe results ride last — dedupe below keeps the
-            // KKPhim copy of a shared title (identical slugs), so cobe
-            // only surfaces titles KKPhim does not have.
-            async { counted { app.cobe.search(query) } }
+            async { counted { app.truyenQq.search(query) } }
         )
-        // Phim/Anime dedupe by slug across kkphim+cobe (their ids differ
-        // by source); other families keep the exact id.
+        // Phim/Anime dedupe by slug (a title can surface under more
+        // than one KKPhim-shaped id); other families keep the exact id.
         val merged = deferred.awaitAll().flatten().distinctBy { item ->
             if (item.family == Family.PHIM || item.family == Family.ANIME) {
                 "slug:${item.slug}"

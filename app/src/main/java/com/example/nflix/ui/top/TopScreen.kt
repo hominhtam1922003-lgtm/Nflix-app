@@ -69,19 +69,20 @@ data class TopUiState(
  * Tab "Top" (user chọn 2026-11-01 thay cho tab Tìm kiếm): bảng xếp hạng theo mục.
  * BXH thật: Manhwa từ NetTruyen (ngày/tuần/tháng/follow), Truyện từ widget
  * "TOP TRUYỆN ĐỌC NHIỀU" của TruyenQQ, Donghua từ trang /top-xem-nhieu (A6).
- * V2 (A2): Phim/Anime nay có BXH lượt xem THẬT — Cobe's search accepts
+ * V2 (A2): Anime có BXH lượt xem THẬT — Cobe's search accepts
  * sort=view_day/view_week with really decreasing counters (measured
- * 2026-11-01). The chart contains ONLY titles Cobe carries: KKPhim
- * publishes no view counts (sortField ignored — measured), so no
- * number is ever invented for a KK-only title; the header states the
- * scope ("Lượt xem thật · Cobe").
+ * 2026-11-01); the header states the scope ("Lượt xem thật · Cobe").
+ * 1.3.3: the PHIM chart is GONE (user order 2026-11-03 09:42 — Phim
+ * is KKPhim-only now, and KKPhim publishes no view counts: sortField
+ * ignored, measured). No replacement is fabricated: a "Top Phim"
+ * ranked by anything else would be an invented chart.
  */
 class TopViewModel(private val app: NflixApp) : ViewModel() {
     private val _state = MutableStateFlow(TopUiState())
     val state: StateFlow<TopUiState> = _state.asStateFlow()
     private val cache = mutableMapOf<Pair<Int, Int>, List<TitleItem>>()
 
-    val families = listOf(Family.PHIM, Family.ANIME, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
+    val families = listOf(Family.ANIME, Family.DONGHUA, Family.MANHWA, Family.TRUYEN)
 
     init {
         load(0, 0)
@@ -89,10 +90,10 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
 
     fun selectFamily(index: Int) {
         if (index == _state.value.familyIndex) return
-        // V2 (A2): the view charts only have 2 periods — a Manhwa
-        // period (Tháng/Theo dõi) must not leak into them.
+        // V2 (A2): the view chart only has 2 periods — a Manhwa
+        // period (Tháng/Theo dõi) must not leak into it.
         val fam = families[index]
-        val period = if (fam == Family.PHIM || fam == Family.ANIME) {
+        val period = if (fam == Family.ANIME) {
             _state.value.period.coerceIn(0, 1)
         } else {
             _state.value.period
@@ -116,15 +117,10 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
         viewModelScope.launch {
             try {
                 val items = when (families[familyIndex]) {
-                    Family.PHIM -> {
-                        // V2 (A2): the real Cobe view chart (day/week).
-                        // Scope: Cobe-carried titles only — KKPhim
-                        // publishes no view counts to rank by.
-                        app.cobe.searchByViews(
-                            weekly = period == 1, limit = 24,
-                            family = Family.PHIM
-                        ).take(10)
-                    }
+                    // Unreachable since 1.3.3 (Phim left the families
+                    // list with its Cobe chart); present only so the
+                    // when over Family stays exhaustive.
+                    Family.PHIM -> emptyList()
                     Family.ANIME -> {
                         // V2 (A2): the same chart restricted to the
                         // animation category, then the tab law applies
@@ -273,7 +269,7 @@ fun TopScreen(onOpenTitle: (TitleItem) -> Unit) {
                 selectedIndex = state.period,
                 onSelect = { viewModel.selectPeriod(it) }
             )
-        } else if (family == Family.PHIM || family == Family.ANIME) {
+        } else if (family == Family.ANIME) {
             // V2 (A2, sheet frame 2): segmented Hôm nay | Tuần over the
             // real Cobe view chart; the note states the chart's scope.
             FilterChips(

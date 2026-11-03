@@ -4,6 +4,7 @@ import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -19,10 +20,27 @@ import java.util.concurrent.TimeUnit
  * Server-rendered HTML; verified live 2026-11-01 (research/manhwa.md).
  * Chapter images live on image1.kcgsbok.com and REQUIRE
  * `Referer: https://nettruyen.gg/` — the app-wide Coil loader adds it.
+ *
+ * 1.3.3: TWO hosts of the same NetTruyen platform — nettruyen.gg and
+ * its mirror nettruyenviet10.com (same selectors, same URL system,
+ * same genre id manhwa-11400, same chapter-list service; measured
+ * 31/31 HTTP 200 in 0.56–1.63s over 3 rounds, dossier
+ * nguon-truyen-moi-2026-11-03). Every request fails over per request
+ * (failing host → the other one), which serves both the Truyện tab's
+ * fallback shelves and the Manhwa tab's primary lists. HOST
+ * CONSISTENCY: a title's detail/chapters/reader stay on the host that
+ * served the title — comicIds of the chapter-list service are
+ * host-local, so detail() pins that call to its serving host instead
+ * of letting it fail over with a foreign id. (truyenqqko.com was
+ * rejected: Cloudflare JS challenge, unreachable for a plain HTTP
+ * client.)
  */
 class NetTruyenSource(
     private val client: OkHttpClient = defaultClient(),
-    private val base: String = "https://nettruyen.gg"
+    private val hosts: List<String> = listOf(
+        "https://nettruyen.gg",
+        "https://nettruyenviet10.com"
+    )
 ) {
     companion object {
         const val SOURCE_ID = "nettruyen"
@@ -30,6 +48,10 @@ class NetTruyenSource(
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)
+            // 1.3.3: hard whole-request ceiling — readTimeout alone is
+            // an inactivity timeout that a slow-dripping host defeats
+            // (dossier truyen-hang-133 §6.1). Same fix as TruyenQQ.
+            .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()
@@ -40,21 +62,65 @@ class NetTruyenSource(
             .build()
     }
 
-    private suspend fun getDoc(path: String): Document = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(base + path).get().build()
+    /**
+     * The mirror that served the most recent successful request;
+     * requests try it first, then the other mirror (the TruyenQQ
+     * twin-host pattern). Stickiness is also what keeps a reading
+     * session on one host: detail() runs right before chapterPages(),
+     * so the reader's pages resolve on the detail's host first.
+     */
+    @Volatile
+    private var activeHost: String = hosts.first()
+
+    /** One raw GET on ONE host (no failover) — throws on HTTP errors. */
+    private fun executeGet(url: String): String {
+        val req = Request.Builder().url(url).get().build()
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("NetTruyen HTTP ${resp.code}")
-            Jsoup.parse(resp.body?.string().orEmpty(), base)
+            if (!resp.isSuccessful) {
+                throw IllegalStateException("NetTruyen HTTP ${resp.code} ($url)")
+            }
+            return resp.body?.string().orEmpty()
         }
     }
 
-    private suspend fun getText(path: String): String = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(base + path).get().build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IllegalStateException("NetTruyen HTTP ${resp.code}")
-            resp.body?.string().orEmpty()
+    /**
+     * GET [path] with per-request failover across the mirror hosts.
+     * Returns the SERVING host alongside the body, so follow-up calls
+     * keyed by host-local ids (the chapter service's comicId) can pin
+     * themselves to the same host via [getTextFromHost].
+     */
+    private suspend fun fetchRaw(path: String): Pair<String, String> =
+        withContext(Dispatchers.IO) {
+            val candidates = listOf(activeHost) + hosts.filter { it != activeHost }
+            val hostErrors = mutableListOf<String>()
+            var lastError: Exception? = null
+            for (host in candidates) {
+                try {
+                    val body = executeGet(host + path)
+                    activeHost = host
+                    return@withContext host to body
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    hostErrors += host.removePrefix("https://") +
+                        ": " + (e.message ?: e.javaClass.simpleName)
+                }
+            }
+            throw IllegalStateException(
+                "NetTruyen: cả hai host đều lỗi — " + hostErrors.joinToString(" · "),
+                lastError
+            )
         }
+
+    private suspend fun getDoc(path: String): Document {
+        val (host, html) = fetchRaw(path)
+        return Jsoup.parse(html, host)
     }
+
+    /** GET pinned to ONE host — never crosses mirrors (see [fetchRaw]). */
+    private suspend fun getTextFromHost(host: String, path: String): String =
+        withContext(Dispatchers.IO) { executeGet(host + path) }
 
     private fun chapNumber(text: String): Float =
         Regex("""(\d+(?:\.\d+)?)""").find(text)?.groupValues?.get(1)?.toFloatOrNull() ?: -1f
@@ -181,7 +247,15 @@ class NetTruyenSource(
     }
 
     suspend fun detail(slug: String): TitleDetail {
-        val doc = getDoc("/truyen-tranh/$slug")
+        // 1.3.3: remember WHICH mirror served this page — the chapter
+        // service below is keyed by a comicId parsed out of THIS page,
+        // and comicIds are host-local: asking the other mirror about
+        // this mirror's id could return another title's chapters. The
+        // chapter call is therefore pinned to the serving host; if it
+        // fails, the embedded chapter rows of THIS page are the
+        // fallback (never a cross-host id lookup).
+        val (servingHost, pageHtml) = fetchRaw("/truyen-tranh/$slug")
+        val doc = Jsoup.parse(pageHtml, servingHost)
         val name = doc.selectFirst("meta[property=og:title]")?.attr("content")
             ?.substringBefore(" | ")?.substringBefore(" - NetTruyen")?.trim()
             ?: doc.selectFirst("h1.title-detail, h1")?.text()?.trim().orEmpty()
@@ -200,7 +274,12 @@ class NetTruyenSource(
         var chapters: List<ChapterItem> = emptyList()
         if (comicId != null) {
             try {
-                val json = JSONObject(getText("/Comic/Services/ComicService.asmx/ProcessChapterList?comicId=$comicId"))
+                val json = JSONObject(
+                    getTextFromHost(
+                        servingHost,
+                        "/Comic/Services/ComicService.asmx/ProcessChapterList?comicId=$comicId"
+                    )
+                )
                 val arr = json.optJSONArray("chapters")
                 if (arr != null) {
                     val list = mutableListOf<ChapterItem>()
@@ -219,6 +298,8 @@ class NetTruyenSource(
                     }
                     chapters = list.sortedBy { it.number }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) { /* fall back to embedded rows below */ }
         }
         if (chapters.isEmpty()) {

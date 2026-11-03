@@ -4,6 +4,7 @@ import com.example.nflix.data.model.ChapterItem
 import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -32,9 +33,15 @@ class TruyenQqSource(
         // slow VN routes while the source itself was alive (measured
         // 2026-11-03: 10/10 HTTP 200 from the VM in the same minutes
         // the user's device reported "both hosts not responding").
+        // 1.3.3: + callTimeout 30s — readTimeout is an INACTIVITY
+        // timeout, so a slow-dripping host (steady trickle under the
+        // read budget) never tripped it and a page load could hang
+        // forever (dossier truyen-hang-133 §1). callTimeout bounds the
+        // WHOLE request, drip included. Same fix as CobeSource (1.3.2).
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()
@@ -66,6 +73,11 @@ class TruyenQqSource(
     private suspend fun getDoc(path: String): Document = withContext(Dispatchers.IO) {
         val candidates = listOf(activeHost) + hosts.filter { it != activeHost }
         var lastError: Exception? = null
+        // 1.3.3: keep EVERY host's error, not just the last one — the
+        // Truyện error screen prints this text ("TruyenQQ (2 host):
+        // <lỗi>"), and with two hosts the second failure used to bury
+        // the first one's diagnosis (dossier truyen-hang-133 §6.5).
+        val hostErrors = mutableListOf<String>()
         for (host in candidates) {
             try {
                 val req = Request.Builder().url(host + path).get().build()
@@ -77,11 +89,18 @@ class TruyenQqSource(
                     lastLoadMs = (System.nanoTime() - started) / 1_000_000
                     return@withContext Jsoup.parse(html, host)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 lastError = e
+                hostErrors += host.removePrefix("https://").removePrefix("http://") +
+                    ": " + (e.message ?: e.javaClass.simpleName)
             }
         }
-        throw lastError ?: IllegalStateException("TruyenQQ: all hosts failed")
+        throw IllegalStateException(
+            "TruyenQQ: cả hai host đều lỗi — " + hostErrors.joinToString(" · "),
+            lastError
+        )
     }
 
     /** Slug = last path segment of an <a> href pointing at a title page. */
@@ -153,6 +172,11 @@ class TruyenQqSource(
         for (p in 1..maxPages) {
             val items = try {
                 completed(p)
+            } catch (e: CancellationException) {
+                // 1.3.3: cancellation (the Truyện tab's total budget)
+                // must abort the harvest, not degrade it to a partial
+                // set that then filters the list wrongly.
+                throw e
             } catch (e: Exception) {
                 break
             }
