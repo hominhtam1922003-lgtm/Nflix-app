@@ -574,18 +574,20 @@ private fun PlayerScreen(
                             // methods live on ExoPlayer's
                             // VideoComponent, not on ExoPlayer
                             // itself (verified against the real
-                            // 1.4.1 jar before pushing).
-                            exo.videoComponent.setVideoTextureView(tv)
+                            // 1.4.1 jar before pushing). The
+                            // getter is @Nullable, so Kotlin sees
+                            // VideoComponent? — safe call (CI #42).
+                            exo.videoComponent?.setVideoTextureView(tv)
                         }
                     },
                     update = { tv ->
                         // Re-assert after the old surface's detach
                         // has run, so a mode switch can never leave
                         // the player surfaceless (black picture).
-                        exo.videoComponent.setVideoTextureView(tv)
+                        exo.videoComponent?.setVideoTextureView(tv)
                     },
                     onRelease = { tv ->
-                        exo.videoComponent.clearVideoTextureView(tv)
+                        exo.videoComponent?.clearVideoTextureView(tv)
                     },
                     modifier = sized.align(Alignment.BottomCenter)
                 )
