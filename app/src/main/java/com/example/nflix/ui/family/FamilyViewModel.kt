@@ -88,6 +88,8 @@ data class FamilyUiState(
     val rows: List<TitleItem> = emptyList(),
     val rowsPage: Int = 1,
     val rowsHasMore: Boolean = false,
+    /** 1.3.8: the posters shelf's own pagination (Phim default mode). */
+    val postersHasMore: Boolean = false,
     val loadingMore: Boolean = false,
     val secondPosters: List<TitleItem> = emptyList(),
     val scheduleWeek: List<Pair<String, List<TitleItem>>> = emptyList(),
@@ -173,6 +175,14 @@ class FamilyViewModel(
     /** B2: ids of everything the user tracks — powers the schedule filter. */
     private val _trackedIds = MutableStateFlow<Set<String>>(emptySet())
     val trackedIds: StateFlow<Set<String>> = _trackedIds.asStateFlow()
+
+    // --- Phim posters-shelf pagination (1.3.8) ---
+    // Non-null only while the posters shelf is an independent feed
+    // (the Phim tab's default filter: the phim-bo kind listing).
+    // Every other state mirrors rows into posters, and the posters
+    // grid then paginates through loadMoreRows instead.
+    private var postersKind: String? = null
+    private var postersPage = 1
 
     // --- Anime pool accumulation (Khối B) ---
     private val animePool = mutableListOf<TitleItem>()
@@ -558,6 +568,9 @@ class FamilyViewModel(
                 var truyenUsedFallback = false
                 val (posters, rows) = when (family) {
                     Family.PHIM -> {
+                        // Posters mirror rows in this mode — the
+                        // posters grid paginates via loadMoreRows.
+                        postersKind = null
                         val kind = PHIM_KINDS.getOrNull(index)?.second ?: "phim-bo"
                         val list = app.mergedPhim.byKindMerged(kind, 1)
                         list to list
@@ -805,10 +818,14 @@ class FamilyViewModel(
                     loadingMore = false,
                     rows = (it.rows + more).distinctBy { d -> d.id },
                     rowsPage = if (more.isNotEmpty()) nextPage else it.rowsPage,
-                    // C3: a failed page fetch is NOT the end of the list —
-                    // for Truyện keep hasMore and raise the rows error state
-                    // instead of swallowing the failure as "no more rows".
-                    rowsHasMore = if (failed && family == Family.TRUYEN) {
+                    // C3: a failed page fetch is NOT the end of the
+                    // list — keep hasMore and (for Truyện) raise the
+                    // rows error state instead of swallowing the
+                    // failure as "no more rows". 1.3.8: the rule now
+                    // covers EVERY family — pre-1.3.8 one network
+                    // hiccup on a Phim page silently ended the grid
+                    // (user verdict 1.3.7).
+                    rowsHasMore = if (failed) {
                         it.rowsHasMore
                     } else if (family == Family.PHIM &&
                         _state.value.phimFilter.version.isNotEmpty()
@@ -820,6 +837,55 @@ class FamilyViewModel(
                         more.isNotEmpty()
                     },
                     truyenRowsError = if (family == Family.TRUYEN) failed else it.truyenRowsError
+                )
+            }
+        }
+    }
+
+    /**
+     * 1.3.8: pagination for the posters shelf's full grid. Before
+     * this the "posters" grid was a FIXED list (TitleGridScreen, no
+     * load-more) — on the Phim tab it ended after ~19 covers (user
+     * verdict 1.3.7: "lướt nhẹ xuống là hết"). Anime's posters ARE
+     * its rows, and in every mirrored state posters follow rows —
+     * both delegate to loadMoreRows. Only the Phim tab's default
+     * posters feed (the phim-bo kind listing) paginates on its own
+     * counter here.
+     */
+    fun loadMorePosters() {
+        if (family == Family.ANIME) {
+            loadMoreRows()
+            return
+        }
+        if (family != Family.PHIM) return
+        val kind = postersKind
+        if (kind == null) {
+            loadMoreRows()
+            return
+        }
+        val s = _state.value
+        if (s.loadingMore || !s.postersHasMore) return
+        _state.update { it.copy(loadingMore = true) }
+        viewModelScope.launch {
+            val nextPage = postersPage + 1
+            var failed = false
+            val more = try {
+                app.mergedPhim.byKindMerged(kind, nextPage, 24)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failed = true
+                emptyList()
+            }
+            if (more.isNotEmpty()) {
+                app.database.titleDao().upsertAll(more.map { it.toEntity() })
+                postersPage = nextPage
+            }
+            _state.update {
+                it.copy(
+                    loadingMore = false,
+                    posters = (it.posters + more).distinctBy { d -> d.id },
+                    postersHasMore = if (failed) it.postersHasMore else more.isNotEmpty()
                 )
             }
         }
@@ -874,6 +940,8 @@ class FamilyViewModel(
                 if (filter.isDefault) {
                     val posters = app.mergedPhim.byKindMerged("phim-bo", 1, 24)
                     val rows = app.mergedPhim.latestMerged(1)
+                    postersKind = "phim-bo"
+                    postersPage = 1
                     app.database.titleDao().upsertAll((posters + rows).map { it.toEntity() })
                     _state.update {
                         it.copy(
@@ -882,11 +950,13 @@ class FamilyViewModel(
                             rows = rows,
                             rowsPage = 1,
                             rowsHasMore = rows.isNotEmpty(),
+                            postersHasMore = posters.isNotEmpty(),
                             familyError = false,
                             familyErrorDetail = ""
                         )
                     }
                 } else {
+                    postersKind = null
                     val list = fetchPhim(filter, 1)
                     app.database.titleDao().upsertAll(list.map { it.toEntity() })
                     _state.update {

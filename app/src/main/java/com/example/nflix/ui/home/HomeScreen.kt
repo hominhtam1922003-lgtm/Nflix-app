@@ -112,6 +112,7 @@ fun HomeScreen(
                 onBack = { showAll = null },
                 onOpenTitle = onOpenTitle,
                 modifier = modifier,
+                onLoadMore = { viewModel.loadMoreLatest() },
                 gridMode = true
             )
             return

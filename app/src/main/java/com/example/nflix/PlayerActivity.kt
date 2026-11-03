@@ -226,6 +226,7 @@ private fun PlayerScreen(
     var showQuality by remember { mutableStateOf(false) }
     var showEpisodes by remember { mutableStateOf(false) }
     var showQuickSettings by remember { mutableStateOf(false) }
+    var showResize by remember { mutableStateOf(false) }
     var portrait by remember { mutableStateOf(false) }
     var playbackError by remember { mutableStateOf<String?>(null) }
     /** 1.3.4: the REAL technical error under the friendly headline. */
@@ -743,7 +744,17 @@ private fun PlayerScreen(
                 showQuickSettings = false
                 showSpeed = true
             },
+            onShowResize = {
+                showQuickSettings = false
+                showResize = true
+            },
             onDismiss = { showQuickSettings = false }
+        )
+    }
+    if (showResize) {
+        ResizeSheet(
+            current = settings.playerResize,
+            onDismiss = { showResize = false }
         )
     }
 }

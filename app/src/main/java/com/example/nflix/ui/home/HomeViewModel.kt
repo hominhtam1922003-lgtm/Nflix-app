@@ -125,6 +125,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     // stack a second full set of Home loads on top of the running one.
     private var heroJob: Job? = null
     private var latestJob: Job? = null
+    // 1.3.8: "Mới nhất" full-grid pagination state.
+    private var latestPage = 1
+    private var latestHasMore = true
+    private var latestLoadingMore = false
     private var suggestedJob: Job? = null
     private var todayJob: Job? = null
     private var forYouJob: Job? = null
@@ -170,6 +174,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 val latest = nflix.mergedPhim.latestMerged(page = 1)
                 db.titleDao().upsertAll(latest.map { it.toEntity() })
                 latestFailed = false
+                latestPage = 1
+                latestHasMore = latest.isNotEmpty()
                 _state.update { it.copy(latestList = latest) }
             } catch (e: CancellationException) {
                 throw e
@@ -204,6 +210,38 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * user order 2026-11-01) is stripped from older saved lists so it can
      * never render again.
      */
+    /**
+     * 1.3.8: paginate the "Mới nhất" full grid — pre-1.3.8 the Home
+     * shelves' full views were fixed lists with no load-more, so the
+     * grid ended after the first page (user verdict 1.3.7). A failed
+     * page keeps hasMore so a later scroll can retry it.
+     */
+    fun loadMoreLatest() {
+        if (latestLoadingMore || !latestHasMore) return
+        latestLoadingMore = true
+        viewModelScope.launch {
+            var failed = false
+            val more = try {
+                nflix.mergedPhim.latestMerged(page = latestPage + 1)
+            } catch (e: CancellationException) {
+                latestLoadingMore = false
+                throw e
+            } catch (e: Exception) {
+                failed = true
+                emptyList()
+            }
+            if (more.isNotEmpty()) {
+                db.titleDao().upsertAll(more.map { it.toEntity() })
+                latestPage++
+            }
+            latestHasMore = if (failed) latestHasMore else more.isNotEmpty()
+            _state.update {
+                it.copy(latestList = (it.latestList + more).distinctBy { d -> d.id })
+            }
+            latestLoadingMore = false
+        }
+    }
+
     private fun effectiveShelves(saved: List<String>): List<String> {
         val list = saved.toMutableList()
         list.remove("new")

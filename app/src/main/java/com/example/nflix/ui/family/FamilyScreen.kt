@@ -123,13 +123,30 @@ fun FamilyScreen(
 
     when (showAll) {
         "posters" -> {
-            TitleGridScreen(
-                title = shelfTitle,
-                items = state.posters,
-                onBack = { showAll = null },
-                onOpenTitle = onOpenTitle,
-                modifier = modifier
-            )
+            // 1.3.8: for Phim/Anime the posters grid PAGINATES like
+            // the rows grid — pre-1.3.8 it was a fixed TitleGridScreen
+            // list that simply ended (user verdict 1.3.7). The other
+            // families' posters are fixed shelves and keep the plain
+            // grid.
+            if (family == Family.PHIM || family == Family.ANIME) {
+                TitleListScreen(
+                    title = shelfTitle,
+                    items = state.posters,
+                    onBack = { showAll = null },
+                    onOpenTitle = onOpenTitle,
+                    modifier = modifier,
+                    onLoadMore = { viewModel.loadMorePosters() },
+                    gridMode = true
+                )
+            } else {
+                TitleGridScreen(
+                    title = shelfTitle,
+                    items = state.posters,
+                    onBack = { showAll = null },
+                    onOpenTitle = onOpenTitle,
+                    modifier = modifier
+                )
+            }
             return
         }
         "coming" -> {

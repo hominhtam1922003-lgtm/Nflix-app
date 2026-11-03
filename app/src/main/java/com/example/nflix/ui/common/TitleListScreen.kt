@@ -12,15 +12,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,6 +44,13 @@ import com.example.nflix.ui.theme.NflixTextMuted
  * approved 3-column poster grid (list-shelf design 2026-11-01) for the
  * surfaces the user picked — same data, same click routing, same
  * load-more, only the presentation changes.
+ *
+ * 1.3.8: load-more is driven by SCROLL POSITION (a snapshotFlow over
+ * the lazy state fires when the last visible item is within 6 of
+ * the end). The pre-1.3.8 trigger — a zero-height sentinel item
+ * whose LaunchedEffect ran if the layout happened to compose it —
+ * was unreliable, and several "Xem tất cả" grids shipped without
+ * any onLoadMore at all, so lists simply ended (user verdict 1.3.7).
  */
 @Composable
 fun TitleListScreen(
@@ -84,8 +94,20 @@ fun TitleListScreen(
                 Text("Chưa có gì ở đây", color = NflixTextMuted, fontSize = 14.sp)
             }
         } else if (gridMode) {
+            val gridState = rememberLazyGridState()
+            LaunchedEffect(gridState, onLoadMore) {
+                if (onLoadMore == null) return@LaunchedEffect
+                snapshotFlow {
+                    val info = gridState.layoutInfo
+                    (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to
+                        info.totalItemsCount
+                }.collect { (lastVisible, total) ->
+                    if (total > 0 && lastVisible >= total - 6) onLoadMore()
+                }
+            }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
+                state = gridState,
                 contentPadding = PaddingValues(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -98,28 +120,25 @@ fun TitleListScreen(
                         coverMeta = true
                     )
                 }
-                if (onLoadMore != null) {
-                    item(key = "load_more", span = { GridItemSpan(3) }) {
-                        androidx.compose.runtime.LaunchedEffect(items.size) {
-                            onLoadMore()
-                        }
-                    }
-                }
             }
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            val listState = rememberLazyListState()
+            LaunchedEffect(listState, onLoadMore) {
+                if (onLoadMore == null) return@LaunchedEffect
+                snapshotFlow {
+                    val info = listState.layoutInfo
+                    (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to
+                        info.totalItemsCount
+                }.collect { (lastVisible, total) ->
+                    if (total > 0 && lastVisible >= total - 6) onLoadMore()
+                }
+            }
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 items(items, key = { it.id }) { item ->
                     UpdatedRow(
                         item = item,
                         onClick = { onOpenTitle(item) }
                     )
-                }
-                if (onLoadMore != null) {
-                    item(key = "load_more") {
-                        androidx.compose.runtime.LaunchedEffect(items.size) {
-                            onLoadMore()
-                        }
-                    }
                 }
             }
         }

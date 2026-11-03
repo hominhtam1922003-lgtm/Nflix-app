@@ -724,6 +724,7 @@ internal fun QuickSettingsSheet(
     settings: AppSettings,
     onShowQuality: () -> Unit,
     onShowSpeed: () -> Unit,
+    onShowResize: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -751,36 +752,54 @@ internal fun QuickSettingsSheet(
                     colors = SwitchDefaults.colors(checkedTrackColor = NflixViolet)
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            // 1.3.7: display size, Netflix-style (user request on the
-            // 1.3.6 verdict — playback was FIT-locked with black bars
-            // and no way to change it). Persisted; the player applies
-            // it live to the stream surface and best-effort to embeds.
-            Text(
+            // 1.3.8: display size is a chevron row like Quality/Speed
+            // and opens its OWN sheet — in 1.3.7 the three options
+            // were inline at the bottom of this sheet, whose column
+            // does not scroll, so they sat below the fold and could
+            // not be tapped (user verdict 1.3.7: "có chứ không dùng
+            // được").
+            QuickRow(
                 "Kích thước hiển thị",
-                color = Color.White, fontSize = 14.sp,
-                modifier = Modifier.padding(horizontal = 4.dp)
-            )
-            QualityRow(
-                "Vừa màn hình",
-                "Giữ nguyên tỉ lệ gốc, có thể có viền đen",
-                settings.playerResize == "FIT"
-            ) {
-                scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, "FIT") }
+                when (settings.playerResize) {
+                    "FULL" -> "Lấp đầy"
+                    "STRETCH" -> "Kéo giãn"
+                    else -> "Vừa màn hình"
+                }
+            ) { onShowResize() }
+            Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+/**
+ * 1.3.8: the display-size picker as its own sheet (Netflix-style),
+ * opened from the QuickSettings chevron row. Picking a size writes
+ * the persisted setting — the player applies it live — and closes.
+ */
+@Composable
+internal fun ResizeSheet(
+    current: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as NflixApp
+    val scope = rememberCoroutineScope()
+    fun pick(mode: String) {
+        scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, mode) }
+        onDismiss()
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = NflixSurface) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Kích thước hiển thị", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(12.dp))
+            QualityRow("Vừa màn hình", "Giữ nguyên tỉ lệ gốc, có thể có viền đen", current == "FIT") {
+                pick("FIT")
             }
-            QualityRow(
-                "Lấp đầy",
-                "Phóng to cho đầy màn hình, cắt bớt hai cạnh",
-                settings.playerResize == "FULL"
-            ) {
-                scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, "FULL") }
+            QualityRow("Lấp đầy", "Phóng to cho đầy màn hình, cắt bớt hai cạnh", current == "FULL") {
+                pick("FULL")
             }
-            QualityRow(
-                "Kéo giãn",
-                "Giãn hình cho đầy màn hình, hình bị méo",
-                settings.playerResize == "STRETCH"
-            ) {
-                scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, "STRETCH") }
+            QualityRow("Kéo giãn", "Giãn hình cho đầy màn hình, hình bị méo", current == "STRETCH") {
+                pick("STRETCH")
             }
             Spacer(Modifier.height(20.dp))
         }
