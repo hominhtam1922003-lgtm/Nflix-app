@@ -1,10 +1,11 @@
 package com.example.nflix.data
 
 import android.net.Uri
-import androidx.media3.exoplayer.hls.DefaultHlsPlaylistParserFactory
-import androidx.media3.exoplayer.hls.HlsMasterPlaylist
-import androidx.media3.exoplayer.hls.HlsPlaylist
-import androidx.media3.exoplayer.hls.HlsPlaylistParserFactory
+import androidx.media3.exoplayer.hls.playlist.DefaultHlsPlaylistParserFactory
+import androidx.media3.exoplayer.hls.playlist.HlsMediaPlaylist
+import androidx.media3.exoplayer.hls.playlist.HlsMultivariantPlaylist
+import androidx.media3.exoplayer.hls.playlist.HlsPlaylist
+import androidx.media3.exoplayer.hls.playlist.HlsPlaylistParserFactory
 import androidx.media3.exoplayer.upstream.ParsingLoadable
 import kotlinx.coroutines.CancellationException
 import java.io.ByteArrayInputStream
@@ -257,9 +258,13 @@ class AdCutPlaylistParserFactory(
         FilteringParser(delegate.createPlaylistParser(), onReport)
 
     override fun createPlaylistParser(
-        masterPlaylist: HlsMasterPlaylist
+        multivariantPlaylist: HlsMultivariantPlaylist,
+        previousMediaPlaylist: HlsMediaPlaylist?
     ): ParsingLoadable.Parser<HlsPlaylist> =
-        FilteringParser(delegate.createPlaylistParser(masterPlaylist), onReport)
+        FilteringParser(
+            delegate.createPlaylistParser(multivariantPlaylist, previousMediaPlaylist),
+            onReport
+        )
 
     private class FilteringParser(
         private val inner: ParsingLoadable.Parser<HlsPlaylist>,
