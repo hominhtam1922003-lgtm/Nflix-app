@@ -129,6 +129,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private var latestPage = 1
     private var latestHasMore = true
     private var latestLoadingMore = false
+    /** 1.3.11: consecutive dry folds tolerated before the end. */
+    private var latestDryStreak = 0
     private var suggestedJob: Job? = null
     private var todayJob: Job? = null
     private var forYouJob: Job? = null
@@ -175,6 +177,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 db.titleDao().upsertAll(latest.map { it.toEntity() })
                 latestFailed = false
                 latestPage = 1
+                latestDryStreak = 0
                 latestHasMore = latest.isNotEmpty()
                 _state.update { it.copy(latestList = latest) }
             } catch (e: CancellationException) {
@@ -231,10 +234,29 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 emptyList()
             }
             if (more.isNotEmpty()) {
-                db.titleDao().upsertAll(more.map { it.toEntity() })
                 latestPage++
+                latestDryStreak = 0
+                // 1.3.11: cache write is best-effort — a throw here
+                // used to strand latestLoadingMore=true forever.
+                try {
+                    db.titleDao().upsertAll(more.map { it.toEntity() })
+                } catch (e: CancellationException) {
+                    latestLoadingMore = false
+                    throw e
+                } catch (e: Exception) {
+                    // cache only — the items still reach the UI
+                }
+            } else if (!failed) {
+                // 1.3.11: dry fold — skip it, don't end the feed
+                // (same rule as the family tabs; see patch notes).
+                latestPage++
+                latestDryStreak++
             }
-            latestHasMore = if (failed) latestHasMore else more.isNotEmpty()
+            latestHasMore = when {
+                failed -> latestHasMore
+                more.isNotEmpty() -> true
+                else -> latestDryStreak < 3
+            }
             _state.update {
                 it.copy(latestList = (it.latestList + more).distinctBy { d -> d.id })
             }

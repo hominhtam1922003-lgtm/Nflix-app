@@ -561,7 +561,12 @@ class PhimCobeSource(
         for (p in first until first + count) {
             val (items, total) = apiFilms(listSlug, p, family)
             totalPages = total
-            if (items.isEmpty()) break
+            // 1.3.11: an empty page mid-fold must NOT truncate the
+            // fold — from the user's network a page can come back
+            // empty once and the old break turned that into "the
+            // catalog ends here". Only the source's own page count
+            // ends a fold.
+            if (p >= total) break
             all += items
         }
         return all.distinctBy { it.slug } to totalPages

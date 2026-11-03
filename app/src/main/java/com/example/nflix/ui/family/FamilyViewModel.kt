@@ -183,6 +183,10 @@ class FamilyViewModel(
     // grid then paginates through loadMoreRows instead.
     private var postersKind: String? = null
     private var postersPage = 1
+    /** 1.3.11: consecutive dry folds tolerated before calling it the end. */
+    private var postersDryStreak = 0
+    /** 1.3.11: same guard for the Phim rows feed. */
+    private var rowsDryStreak = 0
 
     // --- Anime pool accumulation (Khối B) ---
     private val animePool = mutableListOf<TitleItem>()
@@ -810,14 +814,36 @@ class FamilyViewModel(
                 failed = true
                 emptyList()
             }
+            // 1.3.11: the cache write is best-effort — if it ever
+            // throws, the state update below must still run, or
+            // loadingMore stays true forever and paging dies
+            // silently (one of the ways a grid "just ends").
             if (more.isNotEmpty()) {
-                app.database.titleDao().upsertAll(more.map { it.toEntity() })
+                rowsDryStreak = 0
+                try {
+                    app.database.titleDao().upsertAll(more.map { it.toEntity() })
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // cache only — the rows still reach the UI
+                }
             }
+            // 1.3.11: a DRY Phim fold (a whole fold filtered out as
+            // animation, or one flaky empty page) is skipped, not
+            // treated as the end of the catalog — up to 3 in a row.
+            val skipDryFold = more.isEmpty() && !failed &&
+                family == Family.PHIM &&
+                _state.value.phimFilter.version.isEmpty()
+            if (skipDryFold) rowsDryStreak++
             _state.update {
                 it.copy(
                     loadingMore = false,
                     rows = (it.rows + more).distinctBy { d -> d.id },
-                    rowsPage = if (more.isNotEmpty()) nextPage else it.rowsPage,
+                    rowsPage = if (more.isNotEmpty() || skipDryFold) {
+                        nextPage
+                    } else {
+                        it.rowsPage
+                    },
                     // C3: a failed page fetch is NOT the end of the
                     // list — keep hasMore and (for Truyện) raise the
                     // rows error state instead of swallowing the
@@ -825,16 +851,19 @@ class FamilyViewModel(
                     // covers EVERY family — pre-1.3.8 one network
                     // hiccup on a Phim page silently ended the grid
                     // (user verdict 1.3.7).
-                    rowsHasMore = if (failed) {
-                        it.rowsHasMore
-                    } else if (family == Family.PHIM &&
-                        _state.value.phimFilter.version.isNotEmpty()
-                    ) {
-                        // V2 (A1): a dry version round is not the end —
-                        // paging continues while raw source pages remain.
-                        phimVersionRawMore
-                    } else {
-                        more.isNotEmpty()
+                    rowsHasMore = when {
+                        failed -> it.rowsHasMore
+                        family == Family.PHIM &&
+                            _state.value.phimFilter.version.isNotEmpty() ->
+                            // V2 (A1): a dry version round is not the
+                            // end — paging continues while raw source
+                            // pages remain.
+                            phimVersionRawMore
+                        more.isNotEmpty() -> true
+                        // 1.3.11: dry Phim fold — keep paging through
+                        // the skip (see skipDryFold above).
+                        skipDryFold -> rowsDryStreak < 3
+                        else -> false
                     },
                     truyenRowsError = if (family == Family.TRUYEN) failed else it.truyenRowsError
                 )
@@ -878,14 +907,37 @@ class FamilyViewModel(
                 emptyList()
             }
             if (more.isNotEmpty()) {
-                app.database.titleDao().upsertAll(more.map { it.toEntity() })
                 postersPage = nextPage
+                postersDryStreak = 0
+                // 1.3.11: cache write is best-effort (see loadMoreRows).
+                try {
+                    app.database.titleDao().upsertAll(more.map { it.toEntity() })
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // cache only — the posters still reach the UI
+                }
+            } else if (!failed) {
+                // 1.3.11: a DRY fold is skipped, not the end. The
+                // source's phim-bo listing runs 1,391 API pages
+                // (measured live 2026-11-03), but one fold can come
+                // back empty or all-animation after filtering — the
+                // pre-1.3.11 code read that as "catalog over" and
+                // the grid stopped at a dozen covers (user verdict
+                // on 1.3.9: "kho có vài bộ"). Three dry folds in a
+                // row is the honest end.
+                postersPage = nextPage
+                postersDryStreak++
             }
             _state.update {
                 it.copy(
                     loadingMore = false,
                     posters = (it.posters + more).distinctBy { d -> d.id },
-                    postersHasMore = if (failed) it.postersHasMore else more.isNotEmpty()
+                    postersHasMore = when {
+                        failed -> it.postersHasMore
+                        more.isNotEmpty() -> true
+                        else -> postersDryStreak < 3
+                    }
                 )
             }
         }
@@ -942,6 +994,8 @@ class FamilyViewModel(
                     val rows = app.mergedPhim.latestMerged(1)
                     postersKind = "phim-bo"
                     postersPage = 1
+                    postersDryStreak = 0
+                    rowsDryStreak = 0
                     app.database.titleDao().upsertAll((posters + rows).map { it.toEntity() })
                     _state.update {
                         it.copy(

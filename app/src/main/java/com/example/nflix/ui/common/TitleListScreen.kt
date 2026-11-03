@@ -8,12 +8,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -37,6 +39,7 @@ import com.example.nflix.ui.components.PosterCard
 import com.example.nflix.ui.components.UpdatedRow
 import com.example.nflix.ui.theme.NflixBackground
 import com.example.nflix.ui.theme.NflixTextMuted
+import com.example.nflix.ui.theme.NflixViolet
 
 /**
  * Full-screen list — "Xem tất cả" for shelves (Mới nhất, lịch phát sóng).
@@ -120,6 +123,19 @@ fun TitleListScreen(
                         coverMeta = true
                     )
                 }
+                // 1.3.11: a manual paging path at the end of the
+                // grid — auto load-on-scroll stays, but the user can
+                // always pull the next page by hand (and can SEE the
+                // catalog continues; the 1.3.9 verdict video showed a
+                // grid that simply stopped at a dozen covers).
+                if (onLoadMore != null) {
+                    item(
+                        key = "load_more",
+                        span = { GridItemSpan(maxLineSpan) }
+                    ) {
+                        LoadMoreButton(onClick = onLoadMore)
+                    }
+                }
             }
         } else {
             val listState = rememberLazyListState()
@@ -140,7 +156,32 @@ fun TitleListScreen(
                         onClick = { onOpenTitle(item) }
                     )
                 }
+                // 1.3.11: manual paging path, same as the grid mode.
+                if (onLoadMore != null) {
+                    item(key = "load_more") {
+                        LoadMoreButton(onClick = onLoadMore)
+                    }
+                }
             }
         }
+    }
+}
+
+/** 1.3.11: the end-of-list "load more" tap target (see call sites). */
+@Composable
+private fun LoadMoreButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 18.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "Tải thêm",
+            color = NflixViolet,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
