@@ -779,6 +779,7 @@ internal fun QuickSettingsSheet(
                 "Kích thước hiển thị",
                 when (settings.playerResize) {
                     "FULL" -> "Lấp đầy"
+                    "FULLSUB" -> "Lấp đầy (giữ phụ đề)"
                     "STRETCH" -> "Kéo giãn"
                     else -> "Vừa màn hình"
                 }
@@ -831,6 +832,9 @@ internal fun ResizeSheet(
             }
             QualityRow("Lấp đầy", "Phóng to cho đầy màn hình, cắt bớt hai cạnh", current == "FULL") {
                 pick("FULL")
+            }
+            QualityRow("Lấp đầy (giữ phụ đề)", "Phóng đều đầy màn hình, giữ nguyên đáy hình có phụ đề, cắt bớt phía trên", current == "FULLSUB") {
+                pick("FULLSUB")
             }
             QualityRow("Kéo giãn", "Giãn hình cho đầy màn hình, hình bị méo", current == "STRETCH") {
                 pick("STRETCH")

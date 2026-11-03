@@ -15,11 +15,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -46,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -246,6 +250,11 @@ private fun PlayerScreen(
     // Player.Listener.onCues, the same channel PlayerView itself
     // uses to feed its own subtitle view.
     var subtitleOverlay by remember { mutableStateOf<SubtitleView?>(null) }
+    // 1.3.13: display aspect of the running video (width × pixel
+    // ratio ÷ height), fed by the listener's onVideoSizeChanged.
+    // The FULLSUB surface below sizes itself from this; 0 means
+    // "not known yet" and the surface falls back to 16:9.
+    var videoAspect by remember { mutableFloatStateOf(0f) }
 
     fun applyQualityCap(cap: Int) {
         qualityCap = cap
@@ -438,6 +447,16 @@ private fun PlayerScreen(
                 autoSelectTextTrack(tracks)
             }
 
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                // 1.3.13: the FULLSUB (bottom-anchored zoom)
+                // surface sizes itself from the real display
+                // aspect of the stream, pixel ratio included.
+                if (videoSize.height > 0) {
+                    videoAspect =
+                        videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+                }
+            }
+
             override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
                 // 1.3.12 fix1: feed the detached overlay (see
                 // subtitleOverlay above) — the text is rendered
@@ -518,27 +537,82 @@ private fun PlayerScreen(
                 )
             }
     ) {
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exo
-                    useController = false
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                    resizeMode = resizeModeFor(settings.playerResize)
-                    // 1.3.12: the stock subtitle view lives INSIDE
-                    // the aspect-ratio frame, so under Lấp đầy (ZOOM)
-                    // it is cropped along with the picture — the
-                    // screen-anchored overlay below renders instead.
-                    subtitleView?.visibility = android.view.View.GONE
-                }
-            },
-            update = { view ->
-                // 1.3.7: a display-size change in the settings sheet
-                // applies to the running player immediately.
-                view.resizeMode = resizeModeFor(settings.playerResize)
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        if (settings.playerResize == "FULLSUB") {
+            // 1.3.13: "Lấp đầy (giữ phụ đề)" — bottom-anchored
+            // zoom for titles whose subtitles are burned into the
+            // picture (no detached track for 1.3.12 to render).
+            // AspectRatioFrameLayout can only crop around the
+            // CENTRE, so this mode swaps the PlayerView for a
+            // TextureView sized by layout instead: uniform scale
+            // until the screen is filled, anchored to the BOTTOM
+            // edge — the whole overflow is cropped from the top,
+            // the bottom of the picture (where burned-in
+            // subtitles live) is never cut, and nothing is
+            // distorted. The other three modes keep the exact
+            // PlayerView path they have always used.
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clipToBounds()
+            ) {
+                val containerAspect =
+                    if (maxHeight > 0.dp) maxWidth / maxHeight else 0f
+                val va = if (videoAspect > 0f) videoAspect else 16f / 9f
+                val sized =
+                    if (containerAspect > 0f && va >= containerAspect) {
+                        // Video relatively wider than the screen:
+                        // fill by height, overflow left/right.
+                        Modifier.fillMaxHeight().aspectRatio(va)
+                    } else {
+                        // Fill by width, overflow at the top only.
+                        Modifier.fillMaxWidth().aspectRatio(va)
+                    }
+                AndroidView(
+                    factory = { ctx ->
+                        android.view.TextureView(ctx).also { tv ->
+                            // Media3 1.4: the texture-surface
+                            // methods live on ExoPlayer's
+                            // VideoComponent, not on ExoPlayer
+                            // itself (verified against the real
+                            // 1.4.1 jar before pushing).
+                            exo.videoComponent.setVideoTextureView(tv)
+                        }
+                    },
+                    update = { tv ->
+                        // Re-assert after the old surface's detach
+                        // has run, so a mode switch can never leave
+                        // the player surfaceless (black picture).
+                        exo.videoComponent.setVideoTextureView(tv)
+                    },
+                    onRelease = { tv ->
+                        exo.videoComponent.clearVideoTextureView(tv)
+                    },
+                    modifier = sized.align(Alignment.BottomCenter)
+                )
+            }
+        } else {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exo
+                        useController = false
+                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                        resizeMode = resizeModeFor(settings.playerResize)
+                        // 1.3.12: the stock subtitle view lives INSIDE
+                        // the aspect-ratio frame, so under Lấp đầy (ZOOM)
+                        // it is cropped along with the picture — the
+                        // screen-anchored overlay below renders instead.
+                        subtitleView?.visibility = android.view.View.GONE
+                    }
+                },
+                update = { view ->
+                    // 1.3.7: a display-size change in the settings sheet
+                    // applies to the running player immediately.
+                    view.resizeMode = resizeModeFor(settings.playerResize)
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
         // 1.3.12: Netflix-style detached subtitles, part 3 — the
         // subtitle layer is anchored to the SCREEN, outside the
@@ -930,13 +1004,19 @@ private fun EmbedPlayer(
         val fit = when (embedResize) {
             "FULL" -> "cover"
             "STRETCH" -> "fill"
+            // 1.3.13: bottom-anchored cover — same "Lấp đầy
+            // (giữ phụ đề)" idea as the stream surface: the
+            // crop lands on the top, the bottom (subtitles)
+            // stays.
+            "FULLSUB" -> "cover"
             else -> "contain"
         }
+        val pos = if (embedResize == "FULLSUB") "center bottom" else "center center"
         webView?.evaluateJavascript(
             "(function(){var s=document.getElementById('nflix-fit');" +
                 "if(!s){s=document.createElement('style');s.id='nflix-fit';" +
                 "document.head.appendChild(s);}" +
-                "s.textContent='video{object-fit:$fit !important}';})()",
+                "s.textContent='video{object-fit:$fit !important;object-position:$pos !important}';})()",
             null
         )
     }

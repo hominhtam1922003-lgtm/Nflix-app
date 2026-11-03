@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.nflix"
         minSdk = 26
         targetSdk = 34
-        versionCode = 25
-        versionName = "1.3.12"
+        versionCode = 26
+        versionName = "1.3.13"
     }
 
     signingConfigs {
