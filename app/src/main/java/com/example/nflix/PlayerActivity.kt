@@ -319,6 +319,16 @@ private fun PlayerScreen(
                     autoSwitchEpisode = slug
                     triedServers = emptySet()
                 }
+                // 1.3.6: this episode's own alternates first (the
+                // other HLS variants, then the embeds the playback
+                // API returned) — a route-gated HLS host must not
+                // burn a whole server-group hop before the episode's
+                // own embed gets its chance.
+                if (viewModel.failoverPlay()) {
+                    playbackError = null
+                    playbackErrorDetail = null
+                    return
+                }
                 val next = viewModel.nextAutoServer(triedServers + s.serverIndex)
                 if (next != null) {
                     triedServers = triedServers + s.serverIndex
@@ -798,10 +808,15 @@ private fun EmbedPlayer(
     // time, so a fast failure retries the call once after a short
     // wait before giving up.
     fun onEmbedFailed(realError: String) {
+        // 1.3.6: this episode's own alternates first (see
+        // failoverPlay), then the cross-group candidates.
+        if (viewModel.failoverPlay()) return
         if (viewModel.failoverEmbed()) return
         embedScope.launch {
             kotlinx.coroutines.delay(1500)
-            if (!viewModel.failoverEmbed()) embedError = realError
+            if (!viewModel.failoverPlay() && !viewModel.failoverEmbed()) {
+                embedError = realError
+            }
         }
     }
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {

@@ -21,10 +21,28 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.util.concurrent.TimeUnit
 
-/** What one PhimCobe episode resolves to at play time (see [PhimCobeSource.resolvePlay]). */
+/**
+ * What one PhimCobe episode resolves to at play time (see
+ * [PhimCobeSource.resolvePlay]). [fallbacks] carries every other
+ * candidate the playback API returned for the SAME episode (the
+ * remaining HLS variants, then the embeds) — 1.3.6: a dead primary
+ * must advance through these before the player gives up, because
+ * resolvePlay used to throw the embeds away whenever an HLS existed
+ * and the HLS hosts are route-gated.
+ */
 sealed class PhimCobePlay {
-    data class Hls(val url: String) : PhimCobePlay()
-    data class Embed(val url: String) : PhimCobePlay()
+    abstract val url: String
+    abstract val fallbacks: List<String>
+
+    data class Hls(
+        override val url: String,
+        override val fallbacks: List<String> = emptyList()
+    ) : PhimCobePlay()
+
+    data class Embed(
+        override val url: String,
+        override val fallbacks: List<String> = emptyList()
+    ) : PhimCobePlay()
 }
 
 /**
@@ -238,6 +256,44 @@ class PhimCobeSource(
     }
 
     /**
+     * 1.3.6: the films/search API hands out poster URLs through the
+     * site's own image proxy (/api/public/img/u.<base64 of the origin
+     * URL>), but the proxy REJECTS the origin host those records
+     * actually use — measured 2026-11-03: every latest-list record
+     * sampled (20/20) points at img.nguonc.com and the proxy answers
+     * 403 "Host not allowed" for it in every client, browsers
+     * included, while the phimimg.com origins the site's web pages
+     * use pass with 200. For a nguonc origin the app therefore loads
+     * the ORIGIN directly (the Coil loader sends Referer:
+     * nguonc.com for that host); the proxy form stays for origins
+     * the proxy does allow.
+     */
+    private fun imageUrl(raw: String): String {
+        val abs = absolutize(raw)
+        val marker = "/api/public/img/u."
+        val idx = abs.indexOf(marker)
+        if (idx < 0) return abs
+        val payload = abs.substring(idx + marker.length).substringBefore('?')
+        var decoded = ""
+        for (flags in intArrayOf(
+            android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP,
+            android.util.Base64.NO_WRAP
+        )) {
+            decoded = try {
+                String(android.util.Base64.decode(payload, flags), Charsets.UTF_8)
+            } catch (e: Exception) {
+                ""
+            }
+            if (decoded.startsWith("http")) break
+        }
+        return if (decoded.startsWith("http") && decoded.contains("nguonc.com")) {
+            decoded
+        } else {
+            abs
+        }
+    }
+
+    /**
      * Single-pass decode of the RSC JS-string escape layer — the same
      * proven decoder the Cobe adapter used (the naive replace corrupted
      * ~10–20% of records per page; this pass consumes each escape once).
@@ -423,8 +479,8 @@ class PhimCobeSource(
             countries.optJSONObject(i)?.optString("slug")
                 ?.takeIf { it.isNotBlank() }?.let { countrySlugs.add(it) }
         }
-        val poster = absolutize(m.optString("poster_url"))
-        val thumb = absolutize(m.optString("thumb_url"))
+        val poster = imageUrl(m.optString("poster_url"))
+        val thumb = imageUrl(m.optString("thumb_url"))
         val language = m.optString("language")
         return TitleItem(
             id = "${family.name}:$SOURCE_ID:$slug",
@@ -592,8 +648,8 @@ class PhimCobeSource(
                 val slug = f.optString("slug")
                 if (slug.isBlank()) return@mapNotNull null
                 val (current, total) = episodeCountsOf(f)
-                val poster = absolutize(f.optString("poster_url"))
-                val thumb = absolutize(f.optString("thumb_url"))
+                val poster = imageUrl(f.optString("poster_url"))
+                val thumb = imageUrl(f.optString("thumb_url"))
                 TitleItem(
                     id = "${family.name}:$SOURCE_ID:$slug",
                     family = family,
@@ -846,19 +902,36 @@ class PhimCobeSource(
             return null
         }
         if (root.optString("status") != "success") return null
+        // 1.3.6: keep EVERY candidate. Order: all direct HLS first
+        // (ExoPlayer-grade, in the API's own order), then embeds —
+        // non-streamc first, streamc last (Cloudflare-gated on many
+        // routes). The first candidate is the primary; the rest ride
+        // along as fallbacks the player walks on failure.
+        val hlsUrls = mutableListOf<String>()
         val hls = root.optJSONArray("hls")
-        if (hls != null && hls.length() > 0) {
-            val url = hls.optString(0)
-            if (url.isNotBlank()) return PhimCobePlay.Hls(url)
+        if (hls != null) {
+            for (i in 0 until hls.length()) {
+                hls.optString(i).takeIf { it.isNotBlank() }?.let { hlsUrls.add(it) }
+            }
         }
+        val embedUrls = mutableListOf<String>()
         val embeds = root.optJSONArray("embed")
-        if (embeds != null && embeds.length() > 0) {
-            val urls = (0 until embeds.length())
-                .map { embeds.optString(it) }
-                .filter { it.isNotBlank() }
-            val best = urls.firstOrNull { !it.contains("streamc") } ?: urls.firstOrNull()
-            if (best != null) return PhimCobePlay.Embed(best)
+        if (embeds != null) {
+            for (i in 0 until embeds.length()) {
+                embeds.optString(i).takeIf { it.isNotBlank() }?.let { embedUrls.add(it) }
+            }
         }
-        return null
+        val orderedEmbeds = embedUrls.filter { !it.contains("streamc") } +
+            embedUrls.filter { it.contains("streamc") }
+        val candidates = hlsUrls.map { it to true } + orderedEmbeds.map { it to false }
+        val deduped = candidates.distinctBy { it.first }
+        if (deduped.isEmpty()) return null
+        val (primary, primaryIsHls) = deduped.first()
+        val rest = deduped.drop(1).map { it.first }
+        return if (primaryIsHls) {
+            PhimCobePlay.Hls(primary, rest)
+        } else {
+            PhimCobePlay.Embed(primary, rest)
+        }
     }
 }

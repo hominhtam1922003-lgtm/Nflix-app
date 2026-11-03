@@ -166,6 +166,11 @@ class NflixApp : Application(), ImageLoaderFactory {
                 val builder = req.newBuilder()
                     .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
                 when {
+                    // 1.3.6: PhimCobe posters load from the nguonc
+                    // origin directly (the site proxy rejects that
+                    // host) — nguonc's CDN expects its own Referer.
+                    req.url.host.contains("nguonc.com") ->
+                        builder.header("Referer", "https://nguonc.com/")
                     req.url.host.contains("kcgsbok.com") ->
                         builder.header("Referer", "https://nettruyen.gg/")
                     req.url.host.contains("cc3t.net") ->

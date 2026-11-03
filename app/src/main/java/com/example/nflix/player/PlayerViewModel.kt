@@ -243,6 +243,10 @@ class PlayerViewModel(
     }
 
     private suspend fun applyEpisode(item: TitleItem, episode: EpisodeItem) {
+        // 1.3.6: a fresh episode starts with no same-episode
+        // alternates; the PhimCobe branch below fills the list when
+        // the playback API returns more than one candidate.
+        playFallbacks = emptyList()
         when {
             // Cobe episodes carry only a locator — the real link is
             // resolved per episode. Derived/direct HLS feeds ExoPlayer
@@ -252,25 +256,36 @@ class PlayerViewModel(
             PhimCobeSource.isLocator(episode.slug) -> {
                 try {
                     when (val target = app.phimcobe.resolvePlay(episode.slug)) {
-                        is PhimCobePlay.Hls -> _state.update {
-                            it.copy(
-                                loading = false,
-                                episode = episode.copy(streamUrl = target.url),
-                                kind = PlaybackKind.STREAM,
-                                embedUrl = "",
-                                embedReferer = null,
-                                adCutSegments = 0,
-                                adCutSeconds = 0
-                            )
+                        is PhimCobePlay.Hls -> {
+                            playFallbacks = target.fallbacks
+                            _state.update {
+                                it.copy(
+                                    loading = false,
+                                    episode = episode.copy(
+                                        streamUrl = target.url,
+                                        embedUrl = target.fallbacks
+                                            .firstOrNull { fb -> !fb.contains(".m3u8") }
+                                            ?: episode.embedUrl
+                                    ),
+                                    kind = PlaybackKind.STREAM,
+                                    embedUrl = "",
+                                    embedReferer = null,
+                                    adCutSegments = 0,
+                                    adCutSeconds = 0
+                                )
+                            }
                         }
-                        is PhimCobePlay.Embed -> _state.update {
-                            it.copy(
-                                loading = false,
-                                episode = episode.copy(embedUrl = target.url),
-                                kind = PlaybackKind.EMBED,
-                                embedUrl = target.url,
-                                embedReferer = null
-                            )
+                        is PhimCobePlay.Embed -> {
+                            playFallbacks = target.fallbacks
+                            _state.update {
+                                it.copy(
+                                    loading = false,
+                                    episode = episode.copy(embedUrl = target.url),
+                                    kind = PlaybackKind.EMBED,
+                                    embedUrl = target.url,
+                                    embedReferer = null
+                                )
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -348,8 +363,13 @@ class PlayerViewModel(
         val groupIndex: Int,
         val episode: EpisodeItem,
         val kind: PlaybackKind,
-        val url: String
+        val url: String,
+        /** 1.3.6: same-episode alternate URLs behind [url]. */
+        val fallbacks: List<String> = emptyList()
     )
+
+    /** 1.3.6: untried same-episode alternates for the current play. */
+    private var playFallbacks: List<String> = emptyList()
 
     /**
      * Resolve one episode of one group to its playable target — the
@@ -365,9 +385,15 @@ class PlayerViewModel(
         PhimCobeSource.isLocator(episode.slug) -> try {
             when (val target = app.phimcobe.resolvePlay(episode.slug)) {
                 is PhimCobePlay.Hls ->
-                    ResolvedPlay(groupIndex, episode, PlaybackKind.STREAM, target.url)
+                    ResolvedPlay(
+                        groupIndex, episode, PlaybackKind.STREAM,
+                        target.url, target.fallbacks
+                    )
                 is PhimCobePlay.Embed ->
-                    ResolvedPlay(groupIndex, episode, PlaybackKind.EMBED, target.url)
+                    ResolvedPlay(
+                        groupIndex, episode, PlaybackKind.EMBED,
+                        target.url, target.fallbacks
+                    )
             }
         } catch (e: Exception) {
             episode.embedUrl.takeIf { it.isNotBlank() }
@@ -400,12 +426,22 @@ class PlayerViewModel(
 
     /** Put an already-resolved candidate on screen (no re-resolution). */
     private fun applyResolved(item: TitleItem, c: ResolvedPlay) {
+        playFallbacks = c.fallbacks
         when (c.kind) {
             PlaybackKind.STREAM -> _state.update {
                 it.copy(
                     loading = false,
                     serverIndex = c.groupIndex,
-                    episode = c.episode.copy(streamUrl = c.url),
+                    episode = c.episode.copy(
+                        streamUrl = c.url,
+                        // 1.3.6: keep the episode's first embed
+                        // alternate on the episode itself, so the
+                        // existing "Xem bằng web" / embed fallback
+                        // actions have a real target (PhimCobe detail
+                        // episodes carry no embed URL of their own).
+                        embedUrl = c.fallbacks.firstOrNull { fb -> !fb.contains(".m3u8") }
+                            ?: c.episode.embedUrl
+                    ),
                     kind = PlaybackKind.STREAM,
                     embedUrl = "",
                     embedReferer = null,
@@ -549,6 +585,49 @@ class PlayerViewModel(
         embedCandidates = embedCandidates.filter { it.episode.slug != next.episode.slug }
         _state.update { it.copy(loading = true) }
         applyResolved(item, next)
+        return true
+    }
+
+    /**
+     * 1.3.6: advance to the next SAME-episode alternate URL the
+     * playback API returned for this episode (the other HLS
+     * variants, then the embeds). The cross-group mechanisms
+     * (failoverEmbed, nextAutoServer) re-resolve the same gated
+     * pool through other server groups; this episode's own
+     * alternates used to be discarded inside resolvePlay, so a
+     * route-gated HLS host ended playback even though a working
+     * embed for the same episode existed. Returns false when
+     * nothing is left — the caller then moves on to the existing
+     * group-level rescue or the honest error card.
+     */
+    fun failoverPlay(): Boolean {
+        val s = _state.value
+        val ep = s.episode ?: return false
+        val next = playFallbacks.firstOrNull() ?: return false
+        playFallbacks = playFallbacks.drop(1)
+        if (next.contains(".m3u8")) {
+            _state.update {
+                it.copy(
+                    loading = false,
+                    episode = ep.copy(streamUrl = next),
+                    kind = PlaybackKind.STREAM,
+                    embedUrl = "",
+                    embedReferer = null,
+                    error = ""
+                )
+            }
+        } else {
+            _state.update {
+                it.copy(
+                    loading = false,
+                    episode = ep.copy(embedUrl = next),
+                    kind = PlaybackKind.EMBED,
+                    embedUrl = next,
+                    embedReferer = null,
+                    error = ""
+                )
+            }
+        }
         return true
     }
 

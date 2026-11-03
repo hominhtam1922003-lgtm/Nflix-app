@@ -756,11 +756,11 @@ class FamilyViewModel(
     fun loadMoreRows() {
         val s = _state.value
         if (s.loadingMore || !s.rowsHasMore) return
-        // Anime "load more" = pull the next Cobe pool pages, then re-filter.
+        // Anime "load more" = pull the next pool pages, then re-filter.
         if (family == Family.ANIME) {
             _state.update { it.copy(loadingMore = true) }
             viewModelScope.launch {
-                loadAnimePoolPages(2)
+                loadAnimePoolPages(4)
                 publishAnime()
                 kickAnimeEnrichment()
                 _state.update { it.copy(loadingMore = false) }
@@ -947,7 +947,11 @@ class FamilyViewModel(
             // Warm the Donghua slug pool BEFORE the first pool page is
             // published, so no donghua series flashes into the tab.
             app.animeCatalog.warmDonghuaSlugs()
-            loadAnimePoolPages(1)
+            // 1.3.6: the country gate passes only ~half the raw pool
+            // (measured 24/50 on the newest pages), so one raw page
+            // left the tab looking nearly empty. Six pages up front
+            // give the grid a real first screen; the law is unchanged.
+            loadAnimePoolPages(6)
             _state.update {
                 it.copy(
                     loading = false,
@@ -1091,10 +1095,10 @@ class FamilyViewModel(
         publishAnime()
         kickAnimeEnrichment()
         if (!filter.isDefault) {
-            // A filter deserves a wider horizon than page 1: pull two
-            // more pool pages in the background and re-publish.
+            // A filter deserves a wider horizon than page 1: pull
+            // four more pool pages in the background and re-publish.
             viewModelScope.launch {
-                loadAnimePoolPages(2)
+                loadAnimePoolPages(4)
                 publishAnime()
                 kickAnimeEnrichment()
             }
