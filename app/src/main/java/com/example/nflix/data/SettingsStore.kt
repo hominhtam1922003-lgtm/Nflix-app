@@ -33,6 +33,7 @@ data class AppSettings(
     val readerAutoScroll: Boolean = false,        // SCROLL mode: hands-free page drift
     val readerAutoScrollSpeed: String = "NORMAL", // SLOW | NORMAL | FAST
     val readerEyeFilter: Float = 0f,              // warm overlay strength 0..0.45, 0 = off
+    val playerResize: String = "FIT",             // FIT | FULL | STRETCH — 1.3.7 player display size (Netflix-style)
     val shelvesMigrated: Boolean = false          // 1.1.0 one-time shelf-list merge done
 )
 
@@ -61,6 +62,7 @@ class SettingsStore(context: Context) {
             readerAutoScroll = p[READER_AUTOSCROLL] ?: false,
             readerAutoScrollSpeed = p[READER_AUTOSCROLL_SPEED] ?: "NORMAL",
             readerEyeFilter = p[READER_EYE_FILTER] ?: 0f,
+            playerResize = p[PLAYER_RESIZE] ?: "FIT",
             shelvesMigrated = p[SHELVES_MIGRATED] ?: false
         )
     }
@@ -257,6 +259,7 @@ class SettingsStore(context: Context) {
         val READER_AUTOSCROLL_SPEED = stringPreferencesKey("reader_autoscroll_speed")
         val READER_EYE_FILTER = floatPreferencesKey("reader_eye_filter")
         val SHELVES_MIGRATED = booleanPreferencesKey("shelves_migrated_v110")
+        val PLAYER_RESIZE = stringPreferencesKey("player_resize")
         val SEARCH_HISTORY = stringPreferencesKey("search_history")
         val WORKER_STAMPS = stringPreferencesKey("worker_check_stamps")
         val COBE_API_HOST = stringPreferencesKey("cobe_api_host")

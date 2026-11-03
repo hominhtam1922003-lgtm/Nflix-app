@@ -37,6 +37,13 @@ class MergedPhimSource(
     companion object {
         /** Total budget for one detail through this front. */
         private const val DETAIL_BUDGET_MS = 20_000L
+
+        /**
+         * 1.3.7: API pages folded into one UI page for the Phim
+         * lists — the source serves 10 records per page, which read
+         * as a starved grid on device (user verdict 1.3.6).
+         */
+        private const val API_PAGES_PER_UI_PAGE = 3
     }
 
     /**
@@ -57,14 +64,23 @@ class MergedPhimSource(
     // names are kept so every caller (Home, Phim tab) stays untouched.
     // ------------------------------------------------------------------
 
-    /** Newest-updated Phim feed — the catalog's latest listing. */
+    /**
+     * Newest-updated Phim feed — the catalog's latest listing.
+     * 1.3.7: animation records are filtered OUT of every Phim list —
+     * the source's own phim-bo/phim-moi listings are 30–50%
+     * animation (measured live 2026-11-03), and animation belongs
+     * to the Anime tab (user verdict 1.3.6: "hoạt hình tùm lum…
+     * lọc ra").
+     */
     suspend fun latestMerged(page: Int): List<TitleItem> =
-        phimcobe.latestPage(page).first
+        phimcobe.latestMulti(page, API_PAGES_PER_UI_PAGE).first
+            .filter { !it.isAnime }
 
     /** Kind listing (phim-bo / phim-le) from the films API. */
     suspend fun byKindMerged(kind: String, page: Int, limit: Int = 24): List<TitleItem> =
         when (kind) {
-            "phim-bo", "phim-le" -> phimcobe.kindPage(kind, page).first.take(limit)
+            "phim-bo", "phim-le" -> phimcobe.kindMulti(kind, page, API_PAGES_PER_UI_PAGE)
+                .first.filter { !it.isAnime }.take(limit)
             else -> latestMerged(page).take(limit)
         }
 
@@ -92,9 +108,10 @@ class MergedPhimSource(
             country.isNotEmpty() ->
                 phimcobe.countryPage(country, page, kind, Family.PHIM).first
             else ->
-                phimcobe.kindPage(kind.ifEmpty { "phim-bo" }, page).first
+                phimcobe.kindMulti(kind.ifEmpty { "phim-bo" }, page, API_PAGES_PER_UI_PAGE).first
         }
         return base
+            .filter { !it.isAnime }
             .filter { country.isEmpty() || category.isEmpty() || country in it.countrySlugs }
             .filter { year == 0 || it.year == year }
             .filter { it.matchesStatus(status) }

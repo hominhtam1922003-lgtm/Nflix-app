@@ -464,10 +464,16 @@ class PhimCobeSource(
         val (current, _) = episodeCountsOf(m)
         val genres = mutableListOf<String>()
         val genreSlugs = mutableListOf<String>()
+        var rawHoatHinh = false
         val cats = m.optJSONArray("categories") ?: JSONArray()
         for (i in 0 until cats.length()) {
             val c = cats.optJSONObject(i) ?: continue
             val s = c.optString("slug")
+            // 1.3.7: the hoat-hinh umbrella is tracked even though it
+            // is not a display genre — it is the fallback signal for
+            // the Phim tab's animation filter when a record's
+            // isAnime flag is missing.
+            if (s == "hoat-hinh") rawHoatHinh = true
             if (s in GENRE_SLUGS) {
                 genreSlugs.add(s)
                 genres.add(c.optString("name").ifBlank { s })
@@ -508,7 +514,7 @@ class PhimCobeSource(
             // relative-time label rather than inventing one.
             updatedEpochSec = 0,
             countrySlugs = countrySlugs,
-            isAnime = m.optBoolean("isAnime")
+            isAnime = m.optBoolean("isAnime") || rawHoatHinh
         )
     }
 
@@ -534,6 +540,45 @@ class PhimCobeSource(
         }.distinctBy { it.slug }
         val totalPages = root.optJSONObject("pagination")?.optInt("total_pages", page) ?: page
         return items to totalPages
+    }
+
+    /**
+     * 1.3.7: [count] consecutive API pages folded into one UI page.
+     * The API serves only 10 records per page (the app's shelves and
+     * grids were built for ~24-record pages), so a single API page
+     * read as "a handful of titles" on device (user verdict 1.3.6).
+     * UI page N maps to API pages (N-1)*count+1 .. N*count.
+     */
+    private suspend fun apiFilmsMulti(
+        listSlug: String,
+        uiPage: Int,
+        count: Int,
+        family: Family
+    ): Pair<List<TitleItem>, Int> {
+        val all = mutableListOf<TitleItem>()
+        var totalPages = uiPage
+        val first = (uiPage - 1) * count + 1
+        for (p in first until first + count) {
+            val (items, total) = apiFilms(listSlug, p, family)
+            totalPages = total
+            if (items.isEmpty()) break
+            all += items
+        }
+        return all.distinctBy { it.slug } to totalPages
+    }
+
+    /** Newest-updates feed, [count] API pages per UI page. */
+    suspend fun latestMulti(page: Int, count: Int): Pair<List<TitleItem>, Int> =
+        apiFilmsMulti("phim-moi", page, count, Family.PHIM)
+
+    /** Kind listing, [count] API pages per UI page. */
+    suspend fun kindMulti(
+        kind: String,
+        page: Int,
+        count: Int
+    ): Pair<List<TitleItem>, Int> = when (kind) {
+        "phim-bo", "phim-le" -> apiFilmsMulti(kind, page, count, Family.PHIM)
+        else -> latestMulti(page, count)
     }
 
     /**

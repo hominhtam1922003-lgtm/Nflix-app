@@ -63,6 +63,7 @@ import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.nflix.data.AdBlock
 import com.example.nflix.data.AdCutPlaylistParserFactory
@@ -160,6 +161,18 @@ private fun fmtTime(ms: Long): String {
     val m = (totalSec % 3600) / 60
     val s = totalSec % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+}
+
+/**
+ * 1.3.7: the persisted display-size setting (Netflix-style) mapped
+ * to a PlayerView resize mode. FIT keeps the source aspect (black
+ * bars possible), FULL zooms to fill (crops the edges), STRETCH
+ * distorts to fill.
+ */
+private fun resizeModeFor(mode: String): Int = when (mode) {
+    "FULL" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+    "STRETCH" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
 }
 
 private fun qualityLabelForHeight(height: Int): String = when {
@@ -449,7 +462,13 @@ private fun PlayerScreen(
                     player = exo
                     useController = false
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                    resizeMode = resizeModeFor(settings.playerResize)
                 }
+            },
+            update = { view ->
+                // 1.3.7: a display-size change in the settings sheet
+                // applies to the running player immediately.
+                view.resizeMode = resizeModeFor(settings.playerResize)
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -795,6 +814,30 @@ private fun EmbedPlayer(
     var adBlockOn by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         embedApp.settings.flow.collect { adBlockOn = it.adBlock }
+    }
+    // 1.3.7: display size for embeds — the same persisted setting as
+    // the stream surface, applied as object-fit CSS on the page's
+    // video element. Best effort: players rendering into a plain
+    // <video> tag honour it; exotic renderers ignore it and keep
+    // their own fit. The style element persists in the page, so a
+    // video element created after injection is covered too.
+    var embedResize by remember { mutableStateOf("FIT") }
+    LaunchedEffect(Unit) {
+        embedApp.settings.flow.collect { embedResize = it.playerResize }
+    }
+    LaunchedEffect(embedResize, loadedEmbedUrl) {
+        val fit = when (embedResize) {
+            "FULL" -> "cover"
+            "STRETCH" -> "fill"
+            else -> "contain"
+        }
+        webView?.evaluateJavascript(
+            "(function(){var s=document.getElementById('nflix-fit');" +
+                "if(!s){s=document.createElement('style');s.id='nflix-fit';" +
+                "document.head.appendChild(s);}" +
+                "s.textContent='video{object-fit:$fit !important}';})()",
+            null
+        )
     }
     var showServers by remember { mutableStateOf(false) }
     var reportSaved by remember(state.embedUrl) { mutableStateOf(false) }

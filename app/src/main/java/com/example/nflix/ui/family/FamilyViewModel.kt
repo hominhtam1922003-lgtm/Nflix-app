@@ -962,6 +962,21 @@ class FamilyViewModel(
             }
             publishAnime()
             kickAnimeEnrichment()
+            // 1.3.7: background top-up — the country gate passes only
+            // ~55% of the raw pool (measured on the newest pages), so
+            // six raw pages still read as "a handful" on device (user
+            // verdict 1.3.6). Keep pulling two pages at a time until
+            // the tab holds a real grid (48 visible) or the top-up
+            // budget runs out; the list publishes as it grows.
+            var guard = 0
+            while (app.animeCatalog.visible(animePool).size < 48 &&
+                animePoolNextPage <= animePoolTotalPages && guard < 4
+            ) {
+                guard++
+                loadAnimePoolPages(2)
+                publishAnime()
+                kickAnimeEnrichment()
+            }
         }
     }
 

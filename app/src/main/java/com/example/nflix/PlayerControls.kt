@@ -224,6 +224,15 @@ internal fun PlayerControls(
                         append(" · ")
                         withStyle(SpanStyle(color = statusDot)) { append("●") }
                         append(" $statusText")
+                        // 1.3.3b: measured by HlsAdFilter on THIS
+                        // stream's playlist — shown only when ad
+                        // segments were really removed.
+                        if (state.adCutSeconds > 0) {
+                            append(" · ")
+                            withStyle(SpanStyle(color = NflixGreen)) {
+                                append("Đã cắt quảng cáo: ~${state.adCutSeconds}s")
+                            }
+                        }
                     },
                     color = NflixTextMuted,
                     fontSize = 12.sp
@@ -741,6 +750,37 @@ internal fun QuickSettingsSheet(
                     },
                     colors = SwitchDefaults.colors(checkedTrackColor = NflixViolet)
                 )
+            }
+            Spacer(Modifier.height(8.dp))
+            // 1.3.7: display size, Netflix-style (user request on the
+            // 1.3.6 verdict — playback was FIT-locked with black bars
+            // and no way to change it). Persisted; the player applies
+            // it live to the stream surface and best-effort to embeds.
+            Text(
+                "Kích thước hiển thị",
+                color = Color.White, fontSize = 14.sp,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            QualityRow(
+                "Vừa màn hình",
+                "Giữ nguyên tỉ lệ gốc, có thể có viền đen",
+                settings.playerResize == "FIT"
+            ) {
+                scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, "FIT") }
+            }
+            QualityRow(
+                "Lấp đầy",
+                "Phóng to cho đầy màn hình, cắt bớt hai cạnh",
+                settings.playerResize == "FULL"
+            ) {
+                scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, "FULL") }
+            }
+            QualityRow(
+                "Kéo giãn",
+                "Giãn hình cho đầy màn hình, hình bị méo",
+                settings.playerResize == "STRETCH"
+            ) {
+                scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, "STRETCH") }
             }
             Spacer(Modifier.height(20.dp))
         }
