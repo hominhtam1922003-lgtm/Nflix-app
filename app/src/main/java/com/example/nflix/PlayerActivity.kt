@@ -57,6 +57,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSink
@@ -65,6 +66,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
 import com.example.nflix.data.AdBlock
 import com.example.nflix.data.AdCutPlaylistParserFactory
 import com.example.nflix.data.AppSettings
@@ -248,6 +250,41 @@ private fun PlayerScreen(
         exo.trackSelectionParameters = params.build()
     }
 
+    /**
+     * 1.3.12: Netflix-style detached subtitles, part 2 — if the
+     * stream carries text tracks but the selector picked none
+     * (tagged neither Vietnamese nor undetermined), force-select
+     * the best one (vi > undetermined > en > first). Converges:
+     * applying the override re-fires onTracksChanged with a text
+     * track selected, which returns early. Streams with subtitles
+     * burned into the picture have no text groups — nothing here
+     * can (or claims to) help those.
+     */
+    fun autoSelectTextTrack(tracks: Tracks) {
+        val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        if (textGroups.isEmpty() || textGroups.any { it.isSelected }) return
+        val best = textGroups.maxByOrNull { g ->
+            val lang = g.getTrackFormat(0).language ?: ""
+            when {
+                lang.startsWith("vi") -> 3
+                lang.isEmpty() || lang == "und" -> 2
+                lang.startsWith("en") -> 1
+                else -> 0
+            }
+        } ?: return
+        var idx = -1
+        for (i in 0 until best.length) {
+            if (best.isTrackSupported(i)) {
+                idx = i
+                break
+            }
+        }
+        if (idx < 0) return
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .setOverrideForType(TrackSelectionOverride(best.mediaTrackGroup, listOf(idx)))
+            .build()
+    }
+
     // Load the episode's stream into ExoPlayer.
     LaunchedEffect(state.episode?.slug, state.serverIndex, state.kind, retryKey) {
         val ep = state.episode ?: return@LaunchedEffect
@@ -284,6 +321,15 @@ private fun PlayerScreen(
                 }
             )
             .createMediaSource(MediaItem.fromUri(ep.streamUrl))
+        // 1.3.12: Netflix-style detached subtitles, part 1 — when
+        // the stream carries a separate TEXT subtitle rendition,
+        // prefer the Vietnamese one (undetermined-language tracks
+        // count too). The onTracksChanged fallback below force-picks
+        // a text track when the selector still leaves it unselected.
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+            .setPreferredTextLanguage("vi")
+            .setSelectUndeterminedTextLanguage(true)
+            .build()
         exo.setMediaSource(source)
         exo.prepare()
         if (state.resumePositionMs > 0) exo.seekTo(state.resumePositionMs)
@@ -384,6 +430,7 @@ private fun PlayerScreen(
                     }
                 }
                 heights = found.toList()
+                autoSelectTextTrack(tracks)
             }
         }
         exo.addListener(listener)
@@ -465,12 +512,38 @@ private fun PlayerScreen(
                     useController = false
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                     resizeMode = resizeModeFor(settings.playerResize)
+                    // 1.3.12: the stock subtitle view lives INSIDE
+                    // the aspect-ratio frame, so under Lấp đầy (ZOOM)
+                    // it is cropped along with the picture — the
+                    // screen-anchored overlay below renders instead.
+                    subtitleView?.visibility = android.view.View.GONE
                 }
             },
             update = { view ->
                 // 1.3.7: a display-size change in the settings sheet
                 // applies to the running player immediately.
                 view.resizeMode = resizeModeFor(settings.playerResize)
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 1.3.12: Netflix-style detached subtitles, part 3 — the
+        // subtitle layer is anchored to the SCREEN, outside the
+        // video frame, so display-size cropping (Lấp đầy) can no
+        // longer cut the text: the text is not part of the picture.
+        AndroidView(
+            factory = { ctx ->
+                SubtitleView(ctx).apply {
+                    setBottomPaddingFraction(0.10f)
+                    exo.addTextOutput(this)
+                }
+            },
+            onRelease = { view ->
+                try {
+                    exo.removeTextOutput(view)
+                } catch (e: Exception) {
+                    // player already released — nothing to undo
+                }
             },
             modifier = Modifier.fillMaxSize()
         )
