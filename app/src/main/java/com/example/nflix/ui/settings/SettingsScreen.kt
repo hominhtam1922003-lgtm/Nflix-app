@@ -133,6 +133,7 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
     var confirmClearCache by remember { mutableStateOf(false) }
     var backupNote by remember { mutableStateOf("") }
     var pendingExport by remember { mutableStateOf<String?>(null) }
+    var updateNote by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         cacheBytes = withContext(Dispatchers.IO) { dirSize(context.cacheDir) }
@@ -420,6 +421,48 @@ fun SettingsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                 sub = "Ảnh bìa và dữ liệu tạm",
                 value = if (cacheBytes < 0) "…" else formatSize(cacheBytes)
             ) { confirmClearCache = true }
+        }
+        item { GroupHeader("CẬP NHẬT") }
+        item {
+            ValueRow(
+                label = "Phiên bản hiện tại",
+                sub = "App tự kiểm tra bản mới mỗi lần mở",
+                value = com.example.nflix.data.UpdateManager.currentVersion(context)
+            ) { }
+        }
+        item {
+            ValueRow(
+                label = "Kiểm tra cập nhật",
+                sub = "Tìm bản mới trên kho phát hành ngay bây giờ",
+                value = ""
+            ) {
+                scope.launch {
+                    updateNote = "Đang kiểm tra…"
+                    val info = try {
+                        com.example.nflix.data.UpdateManager.check(context)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (info != null) {
+                        app.updateInfo.value = info
+                        updateNote = ""
+                        app.updateDialogOpen.value = true
+                    } else {
+                        updateNote = "Bạn đang dùng bản mới nhất (hoặc chưa " +
+                            "kiểm tra được — xem lại kết nối mạng)."
+                    }
+                }
+            }
+        }
+        if (updateNote.isNotBlank()) {
+            item {
+                Text(
+                    updateNote,
+                    color = NflixViolet,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
         }
         item { Spacer(Modifier.height(28.dp)) }
     }

@@ -72,10 +72,12 @@ data class TopUiState(
  * V2 (A2): Anime có BXH lượt xem THẬT — Cobe's search accepts
  * sort=view_day/view_week with really decreasing counters (measured
  * 2026-11-01); the header states the scope ("Lượt xem thật · Cobe").
- * 1.3.3: the PHIM chart is GONE (user order 2026-11-03 09:42 — Phim
- * is KKPhim-only now, and KKPhim publishes no view counts: sortField
- * ignored, measured). No replacement is fabricated: a "Top Phim"
- * ranked by anything else would be an invented chart.
+ * 1.3.3: the PHIM chart was removed under the KKPhim-only order
+ * (KKPhim publishes no view counts: sortField ignored, measured).
+ * 1.3.4: Phim is Cobe-only again and Cobe DOES publish real view
+ * counts, so a Top Phim chart is possible once more — it is NOT
+ * restored in this round (scope discipline; noted to the user in
+ * the 1.3.4 delivery report). No chart is fabricated in its place.
  */
 class TopViewModel(private val app: NflixApp) : ViewModel() {
     private val _state = MutableStateFlow(TopUiState())

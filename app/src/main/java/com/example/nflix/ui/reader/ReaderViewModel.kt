@@ -41,33 +41,53 @@ class ReaderViewModel(
         viewModelScope.launch {
             val st = app.database.userStateDao().get(item.id)
             _state.update { it.copy(userState = st) }
+            val startPage = if (st != null && st.lastUnitNumber == initialChapter.number && st.pageIndex > 0)
+                st.pageIndex else 1
+            _state.update { it.copy(startPage = startPage) }
+            loadPages(initialChapter, startPage)
+        }
+        // 1.3.4: the chapter list (prev/next navigation) loads in the
+        // BACKGROUND. The reader used to re-fetch the full detail —
+        // a second sequential failover chain — before showing a
+        // single page, although the Detail screen had just loaded the
+        // same data (Lý Thấm's reader dossier). Pages render first;
+        // if this fetch fails, the opened chapter still reads — only
+        // prev/next navigation stays unavailable.
+        viewModelScope.launch {
             try {
                 val detail = when (item.sourceId) {
                     "nettruyen" -> app.netTruyen.detail(item.slug)
-                    "truyenqq" -> app.truyenQq.detail(item.slug, item.family)
                     else -> app.truyenQq.detail(item.slug, item.family)
                 }
                 app.database.titleDao().upsert(detail.item.toEntity())
                 val chapters = detail.chapters.sortedBy { it.number }
-                val current = chapters.firstOrNull { it.number == initialChapter.number }
-                    ?: initialChapter
-                val startPage = if (st != null && st.lastUnitNumber == current.number && st.pageIndex > 0)
-                    st.pageIndex else 1
-                _state.update { it.copy(chapters = chapters, chapter = current, startPage = startPage) }
-                loadPages(current, startPage)
+                if (chapters.isNotEmpty()) {
+                    _state.update { it.copy(chapters = chapters) }
+                }
             } catch (e: Exception) {
-                loadPages(initialChapter, 1)
+                // Navigation aid only — never block reading on it.
             }
         }
+    }
+
+    /**
+     * 1.3.4: chapter ids carry their origin in their shape —
+     * NetTruyen ids contain "/chuong-", TruyenQQ ids "/chapter-".
+     * Routing by the chapter itself (not the title) keeps a chapter
+     * opened from a Detail name-fallback (TruyenQQ title served by
+     * NetTruyen) reading from the source that actually served it.
+     */
+    private suspend fun pagesFor(chapter: ChapterItem): List<String> = when {
+        chapter.id.contains("/chuong-") -> app.netTruyen.chapterPages(chapter.id)
+        chapter.id.contains("/chapter-") -> app.truyenQq.chapterPages(chapter.id)
+        item.sourceId == "nettruyen" -> app.netTruyen.chapterPages(chapter.id)
+        else -> app.truyenQq.chapterPages(chapter.id)
     }
 
     private suspend fun loadPages(chapter: ChapterItem, startPage: Int) {
         _state.update { it.copy(loading = true, error = "") }
         try {
-            val pages = when (item.sourceId) {
-                "nettruyen" -> app.netTruyen.chapterPages(chapter.id)
-                else -> app.truyenQq.chapterPages(chapter.id)
-            }
+            val pages = pagesFor(chapter)
             if (pages.isEmpty()) throw IllegalStateException("empty")
             _state.update {
                 it.copy(
@@ -167,12 +187,13 @@ class ReaderViewModel(
         if (!prefetchedChapters.add(next.number)) return
         viewModelScope.launch {
             try {
-                val urls = when (item.sourceId) {
-                    "nettruyen" -> app.netTruyen.chapterPages(next.id)
-                    else -> app.truyenQq.chapterPages(next.id)
-                }
+                val urls = pagesFor(next)
                 val loader = app.imageLoader
-                urls.forEach { url ->
+                // 1.3.4: warm only the first 12 pages — enqueueing a
+                // whole (possibly 100+ page) chapter at its end used
+                // to flood the image dispatcher and starve the pages
+                // the user is actually reading (Lý Thấm).
+                urls.take(12).forEach { url ->
                     loader.enqueue(ImageRequest.Builder(app).data(url).build())
                 }
             } catch (e: Exception) {

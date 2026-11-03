@@ -14,7 +14,6 @@ import com.example.nflix.data.SettingsStore
 import com.example.nflix.data.local.NflixDatabase
 import com.example.nflix.data.source.CobeSource
 import com.example.nflix.data.source.HhKungfuSource
-import com.example.nflix.data.source.KkPhimSource
 import com.example.nflix.data.source.MergedPhimSource
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.source.TruyenQqSource
@@ -37,7 +36,6 @@ class NflixApp : Application(), ImageLoaderFactory {
             .build()
     }
 
-    val kkPhim: KkPhimSource by lazy { KkPhimSource() }
     val cobe: CobeSource by lazy { CobeSource(settings = settings) }
 
     /**
@@ -57,17 +55,37 @@ class NflixApp : Application(), ImageLoaderFactory {
         )
     }
 
-    /** Đợt 4: merged Phim/Anime front (KKPhim identity + Cobe server groups). */
-    val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(kkPhim, cobe) }
+    /** Phim/Anime routing front — Cobe-only since 1.3.4 (KK dropped by user order). */
+    val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(cobe) }
 
     /** 1.2.0: Anime tab catalog rules over the Cobe animation pool. */
     val animeCatalog: com.example.nflix.data.AnimeCatalog by lazy {
-        com.example.nflix.data.AnimeCatalog(kkPhim, cobe, hhKungfu, settings)
+        com.example.nflix.data.AnimeCatalog(cobe, hhKungfu, settings)
     }
     val truyenQq: TruyenQqSource by lazy { TruyenQqSource() }
     val hhKungfu: HhKungfuSource by lazy { HhKungfuSource() }
     val netTruyen: NetTruyenSource by lazy { NetTruyenSource() }
     val settings: SettingsStore by lazy { SettingsStore(this) }
+
+    /**
+     * 1.3.4: true while the reader overlay is on screen (set by
+     * MainActivity). Background heavy work — the Manhwa index build —
+     * defers while the user is reading instead of fighting the
+     * reader for CPU and the shared TruyenQQ client (Dương Tử S2).
+     */
+    @Volatile
+    var readerOpen: Boolean = false
+
+    /**
+     * 1.3.4: in-app update state, app-wide so the shell's dialog and
+     * Home's reminder line read the same truth. [updateInfo] is the
+     * newest release found by UpdateManager.check (null = none);
+     * [updateDialogOpen] is set by the startup check and by Home's
+     * reminder line.
+     */
+    val updateInfo = kotlinx.coroutines.flow.MutableStateFlow<
+        com.example.nflix.data.UpdateInfo?>(null)
+    val updateDialogOpen = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -140,6 +158,9 @@ class NflixApp : Application(), ImageLoaderFactory {
         val client = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            // 1.3.4: whole-request ceiling for image fetches too
+            // (was missing — network audit §callTimeout).
+            .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val req = chain.request()
                 val builder = req.newBuilder()

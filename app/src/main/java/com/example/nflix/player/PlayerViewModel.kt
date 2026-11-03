@@ -3,6 +3,7 @@ package com.example.nflix.player
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nflix.NflixApp
+import com.example.nflix.data.AdCutReport
 import com.example.nflix.data.ProbeTarget
 import com.example.nflix.data.ServerProbe
 import com.example.nflix.data.ServerStatus
@@ -17,8 +18,12 @@ import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
 import com.example.nflix.data.toItem
+import com.example.nflix.ui.detail.versionPriorityOrder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,7 +53,15 @@ data class PlayerUiState(
      * host sees the same request shape the site's own page produces).
      * Null for every other family: their embed loading is untouched.
      */
-    val embedReferer: String? = null
+    val embedReferer: String? = null,
+    /**
+     * 1.3.3b: REAL mid-roll ad cut measured by HlsAdFilter on the
+     * current stream's media playlist — segments/seconds ACTUALLY
+     * removed before playback. 0 = nothing was cut (the player shows
+     * the "Đã cắt quảng cáo" line only when this is > 0).
+     */
+    val adCutSegments: Int = 0,
+    val adCutSeconds: Int = 0
 )
 
 class PlayerViewModel(
@@ -106,9 +119,9 @@ class PlayerViewModel(
             ?: throw IllegalStateException("Không thấy thông tin bộ này")
         val detail = when (item.sourceId) {
             "hhkungfu" -> app.hhKungfu.detail(item.slug)
-            // Đợt 4: same merged front as the Detail screen, so
-            // the server pool (KKPhim + Cobe groups) matches what
-            // the user picked from; cobe-only titles stay cobe.
+            // Same routing front as the Detail screen, so the
+            // server pool matches what the user picked from
+            // (Cobe-only since 1.3.4).
             else -> app.mergedPhim.detailFor(item)
         }
         app.database.titleDao().upsert(detail.item.toEntity())
@@ -124,10 +137,30 @@ class PlayerViewModel(
         }
         if (serverIdx < 0) serverIdx = 0
         val server = detail.servers.getOrNull(serverIdx)
-        val episode = server?.episodes?.firstOrNull { it.slug == episodeSlug }
+        var episode = server?.episodes?.firstOrNull { it.slug == episodeSlug }
             ?: server?.episodes?.firstOrNull { it.number == episodeNumber }
             ?: server?.episodes?.firstOrNull()
             ?: throw IllegalStateException("Không thấy tập này")
+
+        // 1.3.4 (Triệu Lệ Dĩnh's server dossier): with more than one
+        // group, the handed-in group is NOT trusted blindly — the
+        // same episode number is resolved across ALL groups in
+        // parallel and ranked: probed-alive HLS > other HLS > Embed;
+        // inside a tier, non-KK-infra hosts first (their streams
+        // carry the gambling ads the user ordered dropped); the
+        // language priority only breaks ties. The old flow opened
+        // whatever group contained the slug — measured opening a
+        // Cloudflare-blocked streamc embed while a direct m3u8 of
+        // the same episode sat in another group.
+        val ranked = if (detail.servers.size > 1) {
+            pickInitialRanked(detail, detail.item, episode)
+        } else {
+            null
+        }
+        if (ranked != null) {
+            serverIdx = ranked.groupIndex
+            episode = ranked.episode
+        }
 
         val resume = if (st != null && st.lastUnitNumber == episode.number && !st.finished)
             st.positionMs else 0L
@@ -141,7 +174,14 @@ class PlayerViewModel(
                 resumePositionMs = resume
             )
         }
-        applyEpisode(detail.item, episode)
+        if (ranked != null) {
+            applyResolved(detail.item, ranked)
+            if (ranked.kind == PlaybackKind.EMBED) {
+                prepareEmbedCandidates(episode.number, episode.slug)
+            }
+        } else {
+            applyEpisode(detail.item, episode)
+        }
         // 0.1: with the auto-fastest setting on, measure the other
         // servers in the background so the server sheet shows real
         // statuses/ms instead of a hardcoded claim. Playback itself
@@ -204,11 +244,11 @@ class PlayerViewModel(
 
     private suspend fun applyEpisode(item: TitleItem, episode: EpisodeItem) {
         when {
-            // Đợt 4: cobe episodes carry only a locator — the real link is
+            // Cobe episodes carry only a locator — the real link is
             // resolved per episode. Derived/direct HLS feeds ExoPlayer
-            // like any KKPhim stream (the episode keeps its API embed URL,
-            // so "Xem bằng web" still works after an HLS failure); other
-            // links go to the embed surface.
+            // like any direct stream (the episode keeps its API embed
+            // URL, so "Xem bằng web" still works after an HLS failure);
+            // other links go to the embed surface.
             CobeSource.isLocator(episode.slug) -> {
                 try {
                     when (val target = app.cobe.resolvePlay(episode.slug)) {
@@ -218,7 +258,9 @@ class PlayerViewModel(
                                 episode = episode.copy(streamUrl = target.url),
                                 kind = PlaybackKind.STREAM,
                                 embedUrl = "",
-                                embedReferer = null
+                                embedReferer = null,
+                                adCutSegments = 0,
+                                adCutSeconds = 0
                             )
                         }
                         is CobePlay.Embed -> _state.update {
@@ -256,7 +298,8 @@ class PlayerViewModel(
             episode.streamUrl.isNotBlank() -> _state.update {
                 it.copy(
                     loading = false, episode = episode, kind = PlaybackKind.STREAM,
-                    embedUrl = "", embedReferer = null
+                    embedUrl = "", embedReferer = null,
+                    adCutSegments = 0, adCutSeconds = 0
                 )
             }
             item.sourceId == "hhkungfu" -> {
@@ -288,6 +331,282 @@ class PlayerViewModel(
             }
             else -> _state.update {
                 it.copy(loading = false, episode = episode, error = "Tập này chưa có link phát.")
+            }
+        }
+        // 1.3.4: whenever an episode lands on the embed surface, line
+        // up its failover candidates in the background — a dead embed
+        // then advances on its own (see failoverEmbed) instead of
+        // sitting on its error card.
+        val sNow = _state.value
+        if (sNow.kind == PlaybackKind.EMBED && sNow.episode?.slug == episode.slug) {
+            prepareEmbedCandidates(episode.number, episode.slug)
+        }
+    }
+
+    /** One episode fully resolved to a playable target (1.3.4). */
+    private data class ResolvedPlay(
+        val groupIndex: Int,
+        val episode: EpisodeItem,
+        val kind: PlaybackKind,
+        val url: String
+    )
+
+    /**
+     * Resolve one episode of one group to its playable target — the
+     * same resolution applyEpisode performs for a single pick, reused
+     * by the initial ranking and the embed failover.
+     */
+    private suspend fun resolveCandidate(
+        item: TitleItem,
+        groupIndex: Int,
+        group: ServerGroup,
+        episode: EpisodeItem
+    ): ResolvedPlay? = when {
+        CobeSource.isLocator(episode.slug) -> try {
+            when (val target = app.cobe.resolvePlay(episode.slug)) {
+                is CobePlay.Hls ->
+                    ResolvedPlay(groupIndex, episode, PlaybackKind.STREAM, target.url)
+                is CobePlay.Embed ->
+                    ResolvedPlay(groupIndex, episode, PlaybackKind.EMBED, target.url)
+            }
+        } catch (e: Exception) {
+            episode.embedUrl.takeIf { it.isNotBlank() }
+                ?.let { ResolvedPlay(groupIndex, episode, PlaybackKind.EMBED, it) }
+        }
+        item.sourceId == "hhkungfu" -> try {
+            ResolvedPlay(
+                groupIndex, episode, PlaybackKind.EMBED,
+                app.hhKungfu.resolveEmbed(episode.slug, group.variantKey)
+            )
+        } catch (e: Exception) {
+            null
+        }
+        episode.streamUrl.isNotBlank() ->
+            ResolvedPlay(groupIndex, episode, PlaybackKind.STREAM, episode.streamUrl)
+        episode.embedUrl.isNotBlank() ->
+            ResolvedPlay(groupIndex, episode, PlaybackKind.EMBED, episode.embedUrl)
+        else -> null
+    }
+
+    /** KK-infra hosts (their streams carry the spliced gambling ads). */
+    private fun isKkInfra(url: String): Boolean {
+        val host = try {
+            java.net.URI(url).host ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        return host.contains("kkphim") || host.contains("kvp")
+    }
+
+    /** Put an already-resolved candidate on screen (no re-resolution). */
+    private fun applyResolved(item: TitleItem, c: ResolvedPlay) {
+        when (c.kind) {
+            PlaybackKind.STREAM -> _state.update {
+                it.copy(
+                    loading = false,
+                    serverIndex = c.groupIndex,
+                    episode = c.episode.copy(streamUrl = c.url),
+                    kind = PlaybackKind.STREAM,
+                    embedUrl = "",
+                    embedReferer = null,
+                    adCutSegments = 0,
+                    adCutSeconds = 0,
+                    error = ""
+                )
+            }
+            PlaybackKind.EMBED -> _state.update {
+                it.copy(
+                    loading = false,
+                    serverIndex = c.groupIndex,
+                    episode = c.episode.copy(embedUrl = c.url),
+                    kind = PlaybackKind.EMBED,
+                    embedUrl = c.url,
+                    embedReferer = if (item.sourceId == "hhkungfu") {
+                        donghuaWatchReferer(item.slug, c.episode.slug)
+                    } else {
+                        null
+                    },
+                    error = ""
+                )
+            }
+        }
+    }
+
+    /**
+     * 1.3.4: the initial pick for a multi-group title — resolve the
+     * fallback episode's number across ALL groups in parallel, probe
+     * the direct streams, and rank (see loadInitial). Null when
+     * nothing resolves at all; the caller then keeps the old path,
+     * whose error is the honest one.
+     */
+    private suspend fun pickInitialRanked(
+        detail: TitleDetail,
+        item: TitleItem,
+        fallbackEpisode: EpisodeItem
+    ): ResolvedPlay? {
+        val number = fallbackEpisode.number
+        val candidates = coroutineScope {
+            detail.servers.flatMapIndexed { gi, group ->
+                group.episodes.filter { it.number == number }
+                    .map { ep -> async { resolveCandidate(item, gi, group, ep) } }
+            }.awaitAll()
+        }.filterNotNull().distinctBy { it.episode.slug }
+        if (candidates.isEmpty()) return null
+        val bySlug = candidates.associateBy { it.episode.slug }
+        val statuses = ServerProbe.probeAll(detail.servers, number) { ep ->
+            when (val c = bySlug[ep.slug]) {
+                null -> ProbeTarget.None
+                else -> if (c.kind == PlaybackKind.STREAM) {
+                    ProbeTarget.Stream(c.url)
+                } else {
+                    ProbeTarget.Embed(c.url)
+                }
+            }
+        }
+        _state.update { it.copy(serverStatuses = statuses) }
+        val priority = try {
+            app.settings.flow.first().versionPriority
+        } catch (e: Exception) {
+            "TM"
+        }
+        val order = versionPriorityOrder(priority)
+        fun langRank(groupIndex: Int): Int {
+            val key = detail.servers.getOrNull(groupIndex)?.langKey ?: return order.size
+            val i = order.indexOf(key)
+            return if (i < 0) order.size else i
+        }
+        fun tier(c: ResolvedPlay): Int = when {
+            c.kind == PlaybackKind.STREAM &&
+                statuses[c.groupIndex]?.isAlive == true -> 0
+            c.kind == PlaybackKind.STREAM -> 1
+            else -> 2
+        }
+        return candidates.minWithOrNull(
+            compareBy<ResolvedPlay>(
+                { tier(it) },
+                { if (it.kind == PlaybackKind.STREAM && isKkInfra(it.url)) 1 else 0 },
+                { statuses[it.groupIndex]?.ms ?: Long.MAX_VALUE },
+                { langRank(it.groupIndex) },
+                { it.groupIndex }
+            )
+        )
+    }
+
+    // --- Embed failover (1.3.4) --------------------------------------
+
+    /** Ledger of embed candidates already tried for this episode. */
+    private val triedEmbedSlugs = mutableSetOf<String>()
+
+    /** Ordered untried candidates for the current embed episode. */
+    private var embedCandidates: List<ResolvedPlay> = emptyList()
+
+    /**
+     * Build the failover list for an embed episode: every same-number
+     * episode in every group (including same-group variants the group
+     * switcher cannot reach), resolved in parallel and ranked
+     * STREAM-first, then Embed — a dead embed should land on a real
+     * stream whenever one exists.
+     */
+    private fun prepareEmbedCandidates(number: Float, currentSlug: String) {
+        val detail = _state.value.detail ?: return
+        val item = _state.value.item ?: return
+        triedEmbedSlugs.clear()
+        triedEmbedSlugs += currentSlug
+        embedCandidates = emptyList()
+        viewModelScope.launch {
+            val resolved = coroutineScope {
+                detail.servers.flatMapIndexed { gi, group ->
+                    group.episodes.filter { it.number == number && it.slug != currentSlug }
+                        .map { ep -> async { resolveCandidate(item, gi, group, ep) } }
+                }.awaitAll()
+            }.filterNotNull()
+            embedCandidates = resolved
+                .filter { it.episode.slug !in triedEmbedSlugs }
+                .distinctBy { it.episode.slug }
+                .sortedWith(
+                    compareBy<ResolvedPlay>(
+                        { if (it.kind == PlaybackKind.STREAM) 0 else 1 },
+                        { if (it.kind == PlaybackKind.STREAM && isKkInfra(it.url)) 1 else 0 },
+                        { it.groupIndex }
+                    )
+                )
+        }
+    }
+
+    /**
+     * Advance a failed embed to the next untried candidate. Returns
+     * false when nothing is left — the caller then shows the error
+     * card with the real error. The candidate list is built in the
+     * background at apply time; an early failure can race it, so the
+     * UI retries this call once after a short wait before giving up.
+     */
+    fun failoverEmbed(): Boolean {
+        val s = _state.value
+        val item = s.item ?: return false
+        val next = embedCandidates.firstOrNull { it.episode.slug !in triedEmbedSlugs }
+            ?: return false
+        triedEmbedSlugs += next.episode.slug
+        embedCandidates = embedCandidates.filter { it.episode.slug != next.episode.slug }
+        _state.update { it.copy(loading = true) }
+        applyResolved(item, next)
+        return true
+    }
+
+    /**
+     * 1.3.4: the STREAM auto-switch target — the next group by probe
+     * ranking (alive first by measured ms, then unmeasured, then
+     * embed-only, dead last), skipping everything in [tried]. The old
+     * rule was a blind (index + 1) taken exactly once, which on a
+     * one-host failure walked into the next dead group and stopped.
+     */
+    fun nextAutoServer(tried: Set<Int>): Int? {
+        val s = _state.value
+        val servers = s.detail?.servers ?: return null
+        val statuses = s.serverStatuses
+        fun tier(i: Int): Int {
+            val st = statuses[i] ?: return 1
+            return when {
+                st.isAlive -> 0
+                st.state == ServerStatus.State.UNKNOWN -> 1
+                st.state == ServerStatus.State.EMBED -> 2
+                else -> 3
+            }
+        }
+        return servers.indices
+            .filter { it != s.serverIndex && it !in tried }
+            .minWithOrNull(
+                compareBy<Int>(
+                    { tier(it) },
+                    { statuses[it]?.ms ?: Long.MAX_VALUE },
+                    { it }
+                )
+            )
+    }
+
+    /**
+     * 1.3.3b: HlsAdFilter (wired into the player's playlist parser in
+     * PlayerActivity) reports what it ACTUALLY cut from a media
+     * playlist. Guards keep the number honest: a report counts only
+     * for the stream currently on screen — a stale parser finishing
+     * an old episode/server load must not paint its numbers onto this
+     * one — and when several renditions of the same episode get
+     * parsed, the LARGEST report wins (each rendition carries roughly
+     * the same ad breaks; the max is the least-understated measure).
+     */
+    fun recordAdCut(forUrl: String, report: AdCutReport) {
+        if (report.cutSegments <= 0) return
+        val s = _state.value
+        if (s.kind != PlaybackKind.STREAM) return
+        if (s.episode?.streamUrl != forUrl) return
+        val seconds = report.cutSeconds.toInt()
+        _state.update {
+            if (seconds > it.adCutSeconds) {
+                it.copy(
+                    adCutSegments = report.cutSegments,
+                    adCutSeconds = seconds
+                )
+            } else {
+                it
             }
         }
     }

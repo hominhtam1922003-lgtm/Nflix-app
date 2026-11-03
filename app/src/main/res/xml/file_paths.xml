@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 1.3.4: shares the downloaded update APK (cache/updates) with the
+     system installer through FileProvider. Nothing else is exposed. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

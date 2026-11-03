@@ -70,9 +70,48 @@ class CobeSource(
          */
         private const val DISCOVERY_TTL_MS = 10 * 60 * 1000L
 
+        /** 1.3.4: how long a parsed resolvePlay result stays reusable. */
+        private const val PLAY_CACHE_TTL_MS = 5 * 60 * 1000L
+
         /** API host measured live 2026-11-01; rediscovery replaces it when it dies. */
         private const val FALLBACK_API_BASE =
             "https://egluy2hhb21vaw5ndw9pbmhl.darkbytes.xyz/api/v1"
+
+        /**
+         * 1.3.4: the Phim sheet's genre table — Cobe's OWN categories,
+         * measured 2026-11-03 from real catalog records (288 sampled
+         * via the search API; every slug's /the-loai/<slug> listing
+         * verified HTTP 200 the same day), ordered by sampled
+         * frequency. "Hoạt Hình" is deliberately absent: Anime is its
+         * own tab (user order) — it stays reachable there. This list
+         * replaces KKPhim's 26, which died with that source.
+         */
+        val CATEGORIES: List<Pair<String, String>> = listOf(
+            "Chính Kịch" to "chinh-kich",
+            "Hành Động" to "hanh-dong",
+            "Tình Cảm" to "tinh-cam",
+            "Tâm Lý" to "tam-ly",
+            "Hài Hước" to "hai-huoc",
+            "Phiêu Lưu" to "phieu-luu",
+            "Giả Tưởng" to "gia-tuong",
+            "Kinh Dị" to "kinh-di",
+            "Hình Sự" to "hinh-su",
+            "Bí Ẩn" to "bi-an",
+            "Gia Đình" to "gia-dinh",
+            "Cổ Trang" to "co-trang",
+            "Khoa Học Viễn Tưởng" to "khoa-hoc-vien-tuong",
+            "Chiến Tranh" to "chien-tranh",
+            "Tội Phạm" to "toi-pham",
+            "Võ Thuật" to "vo-thuat",
+            "Lịch Sử" to "lich-su",
+            "Lãng Mạn" to "lang-man",
+            "Học Đường" to "hoc-duong",
+            "Âm Nhạc" to "am-nhac",
+            "Miền Tây" to "mien-tay",
+            "Tài Liệu" to "tai-lieu",
+            "Thể Thao" to "the-thao",
+            "Thần Thoại" to "than-thoai"
+        )
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -421,8 +460,7 @@ class CobeSource(
     /**
      * Search always needs an explicit limit (without one the API returns
      * only ~5 per page). Anime cannot be told apart reliably from this
-     * payload (no country field), so results default to PHIM — the merge
-     * dedupe still lets the KKPhim copy of an anime win by slug.
+     * payload (no country field), so results default to PHIM.
      */
     suspend fun search(keyword: String, page: Int = 1, limit: Int = 24): List<TitleItem> {
         val kw = java.net.URLEncoder.encode(keyword, "UTF-8")
@@ -782,6 +820,35 @@ class CobeSource(
         else -> emptyList<TitleItem>() to page
     }
 
+    /** 1.3.4: the site's newest-updates listing (/phim-moi, measured 200). */
+    suspend fun latestPage(page: Int): Pair<List<TitleItem>, Int> =
+        webListPage("/phim-moi", page, Family.PHIM)
+
+    /**
+     * 1.3.4: one /the-loai/<slug> page with the kind facet applied on
+     * the records' OWN `type` field (series vs movie) — parseItem
+     * drops `type`, so the filter must run on the raw payload here.
+     * [kind] "" keeps both. Genre listings mix types by design; this
+     * is what lets the Phim sheet combine Thể loại + Loại exactly.
+     */
+    suspend fun categoryPage(
+        categorySlug: String,
+        page: Int,
+        kind: String,
+        family: Family = Family.PHIM
+    ): Pair<List<TitleItem>, Int> {
+        val html = getText("$webBase/the-loai/$categorySlug?page=$page")
+        val totalPages = totalPagesOf(html) ?: page
+        val items = extractItemJson(html)
+            .filter { it.optString("slug").isNotBlank() }
+            .filter {
+                kind.isEmpty() ||
+                    (kind == "phim-le") == (it.optString("type") == "movie")
+            }
+            .map { parseItem(it, family) }
+        return items.distinctBy { it.slug } to totalPages
+    }
+
     suspend fun detail(slug: String, family: Family = Family.PHIM): TitleDetail {
         val root = getApiJson("/movies/by-slug/$slug")
         val m = root.optJSONObject("movie") ?: throw IllegalStateException("Cobe: no movie")
@@ -794,9 +861,8 @@ class CobeSource(
             // an empty "successful" detail (servers=[], no error flag)
             // — the Player then died with a phantom "Không thấy tập
             // này" dressed as a network error (dossier phim-0-tap §2
-            // branch C3). Fail loudly like KkPhimSource does: the
-            // merged front flags it via cobeFailed, and the cobe-only
-            // path surfaces this real message.
+            // branch C3). Fail loudly: the detail call surfaces this
+            // real message to the screen.
             Log.w(TAG, "Cobe episode list failed for slug=$slug: ${e.message}")
             throw IllegalStateException("Cobe: không lấy được danh sách tập cho tựa này", e)
         }
@@ -814,9 +880,9 @@ class CobeSource(
             groups.any { it.langKey == "vs" } -> "VS"
             else -> base.versionBadge
         }
-        // Genre links double as "Cùng thể loại" keys: prefer the KKPhim
-        // slug for the same genre name (the two catalogs share the slug
-        // system), so the shelf can be served by the KKPhim category API.
+        // Genre links double as "Cùng thể loại" keys — Cobe's OWN
+        // slugs (1.3.4: KKPhim is gone; the shelf is served by Cobe's
+        // /the-loai/<slug> listings, so the keys must be Cobe's).
         val genreLinks = mutableListOf<Pair<String, String>>()
         val cats = m.optJSONArray("categories") ?: JSONArray()
         for (i in 0 until cats.length()) {
@@ -824,10 +890,7 @@ class CobeSource(
             val name = c.optString("name")
             val ownSlug = c.optString("slug")
             if (name.isBlank()) continue
-            val kkSlug = KkPhimSource.CATEGORIES
-                .firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
-            val linkSlug = kkSlug ?: ownSlug
-            if (linkSlug.isNotBlank()) genreLinks.add(name to linkSlug)
+            if (ownSlug.isNotBlank()) genreLinks.add(name to ownSlug)
         }
         val description = m.optString("description").let { html ->
             if (html.isBlank()) "" else Jsoup.parseBodyFragment(html).text()
@@ -914,7 +977,23 @@ class CobeSource(
      *   surface. When the page cannot be parsed, the watch page itself
      *   is the embed fallback.
      */
+    /** 1.3.4: one parsed resolvePlay result, kept for PLAY_CACHE_TTL_MS. */
+    private data class CachedPlay(val play: CobePlay, val atMs: Long)
+
+    private val playCache = java.util.concurrent.ConcurrentHashMap<String, CachedPlay>()
+
     suspend fun resolvePlay(locator: String): CobePlay {
+        // 1.3.4: short-term cache — Detail's probe, the player's init
+        // ranking and embed failover all resolve the SAME locators
+        // within minutes of each other, and the watch-page fetch is
+        // the slowest call in the Cobe path. Only results parsed from
+        // a real page are cached; the failure fallbacks below (watch
+        // page unreachable / unparseable) are re-tried next time.
+        playCache[locator]?.let { cached ->
+            if (System.currentTimeMillis() - cached.atMs < PLAY_CACHE_TTL_MS) {
+                return cached.play
+            }
+        }
         val (movieSlug, episodeId) = parseLocator(locator)
             ?: throw IllegalStateException("Cobe: bad locator")
         val watchUrl = "$webBase/phim/$movieSlug/tap-$episodeId"
@@ -931,13 +1010,14 @@ class CobeSource(
         val link = match.groupValues[2].replace("\\/", "/")
         if (link.isBlank()) return CobePlay.Embed(watchUrl)
         val sm = STREAMVSMOV.find(link)
-        if (sm != null) {
-            return CobePlay.Hls("${sm.groupValues[1]}/stream/${sm.groupValues[2]}/master.m3u8")
-        }
-        return if (type.equals("m3u8", ignoreCase = true) || link.endsWith(".m3u8")) {
+        val play = if (sm != null) {
+            CobePlay.Hls("${sm.groupValues[1]}/stream/${sm.groupValues[2]}/master.m3u8")
+        } else if (type.equals("m3u8", ignoreCase = true) || link.endsWith(".m3u8")) {
             CobePlay.Hls(link)
         } else {
             CobePlay.Embed(link)
         }
+        playCache[locator] = CachedPlay(play, System.currentTimeMillis())
+        return play
     }
 }

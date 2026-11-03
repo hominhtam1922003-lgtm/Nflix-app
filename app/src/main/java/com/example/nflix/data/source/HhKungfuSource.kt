@@ -74,12 +74,17 @@ class HhKungfuSource(
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
+                // 1.3.4: whole-request ceiling (was missing — a
+                // slow-dripping host defeated the inactivity-only
+                // readTimeout; network audit §callTimeout).
+                .callTimeout(30, TimeUnit.SECONDS)
                 .build()
         }
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()

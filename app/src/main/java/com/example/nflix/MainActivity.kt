@@ -11,15 +11,24 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nflix.data.local.UserStateEntity
@@ -53,6 +63,8 @@ import com.example.nflix.work.NewEpisodeWorker
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import com.example.nflix.ui.theme.NflixBackground
+import com.example.nflix.ui.theme.NflixGreen
+import com.example.nflix.ui.theme.NflixRed
 import com.example.nflix.ui.theme.NflixSurface
 import com.example.nflix.ui.theme.NflixText
 import com.example.nflix.ui.theme.NflixTextMuted
@@ -194,6 +206,10 @@ private fun NflixShell() {
     }
     val shellScope = rememberCoroutineScope()
     val app = context.applicationContext as NflixApp
+
+    // 1.3.4: publish reader visibility app-wide — background heavy
+    // work (Manhwa index build) defers while the user is reading.
+    LaunchedEffect(readerRequest) { app.readerOpen = readerRequest != null }
 
     val resumeFromState: (TitleItem, UserStateEntity) -> Unit = { item, st ->
         when (item.family) {
@@ -401,4 +417,191 @@ private fun NflixShell() {
             }
         }
     }
+
+    // 1.3.4: in-app update (user-approved design) — check once per
+    // cold start. The dialog pops unless this exact version was
+    // dismissed with "Để sau" (a forced release ignores dismissal);
+    // Home's reminder line can reopen it either way.
+    val updateInfo by app.updateInfo.collectAsState()
+    val updateDialogOpen by app.updateDialogOpen.collectAsState()
+    LaunchedEffect(Unit) {
+        val info = try {
+            com.example.nflix.data.UpdateManager.check(context)
+        } catch (e: Exception) {
+            null
+        }
+        if (info != null) {
+            app.updateInfo.value = info
+            val dismissed = try {
+                app.settings.dismissedUpdateVersion.first()
+            } catch (e: Exception) {
+                ""
+            }
+            if (info.force || dismissed != info.versionName) {
+                app.updateDialogOpen.value = true
+            }
+        }
+    }
+    if (updateDialogOpen && updateInfo != null) {
+        UpdateDialog(
+            info = updateInfo!!,
+            onLater = {
+                app.updateDialogOpen.value = false
+                val v = updateInfo!!.versionName
+                shellScope.launch { app.settings.setDismissedUpdateVersion(v) }
+            },
+            onClose = { app.updateDialogOpen.value = false }
+        )
+    }
+}
+
+/**
+ * 1.3.4: the update dialog — info → (one-time install permission) →
+ * in-app download with real progress → hand-off to the system
+ * installer. The forced variant has no "Để sau" and cannot be
+ * dismissed by tapping outside.
+ */
+@Composable
+private fun UpdateDialog(
+    info: com.example.nflix.data.UpdateInfo,
+    onLater: () -> Unit,
+    onClose: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var progress by remember { mutableStateOf<Float?>(null) }
+    var downloaded by remember { mutableStateOf<java.io.File?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var messageIsError by remember { mutableStateOf(false) }
+
+    fun startDownload() {
+        message = null
+        progress = 0f
+        scope.launch {
+            try {
+                val file = com.example.nflix.data.UpdateManager
+                    .download(context, info) { p -> progress = p }
+                downloaded = file
+                progress = null
+            } catch (e: Exception) {
+                progress = null
+                messageIsError = true
+                message = e.message ?: "Tải thất bại — kiểm tra mạng rồi thử lại."
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!info.force && progress == null) onLater()
+        },
+        containerColor = NflixSurface,
+        title = {
+            Text(
+                "Có bản cập nhật mới",
+                color = NflixText,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    "Phiên bản ${info.versionName} đã sẵn sàng.",
+                    color = NflixTextMuted,
+                    fontSize = 13.sp
+                )
+                if (info.changelog.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Có gì mới",
+                        color = NflixText,
+                        fontSize = 13.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                    )
+                    Text(
+                        info.changelog,
+                        color = NflixTextMuted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                when {
+                    progress != null -> {
+                        Spacer(Modifier.height(14.dp))
+                        LinearProgressIndicator(
+                            progress = { progress!! },
+                            color = NflixViolet,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Đang tải… ${(progress!! * 100).toInt()}%",
+                            color = NflixTextMuted,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    downloaded != null -> Text(
+                        "Đã tải xong. Bấm Cài đặt — hệ thống sẽ hỏi xác " +
+                            "nhận một lần, dữ liệu của bạn được giữ nguyên.",
+                        color = NflixGreen,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                    message != null -> Text(
+                        message!!,
+                        color = if (messageIsError) NflixRed else NflixTextMuted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            when {
+                downloaded != null -> TextButton(onClick = {
+                    context.startActivity(
+                        com.example.nflix.data.UpdateManager
+                            .installIntent(context, downloaded!!)
+                    )
+                    onClose()
+                }) {
+                    Text(
+                        "Cài đặt",
+                        color = NflixViolet,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                }
+                progress == null -> TextButton(onClick = {
+                    if (!com.example.nflix.data.UpdateManager.canInstall(context)) {
+                        // One-time Android grant — without it the
+                        // installer cannot be handed the file at all.
+                        messageIsError = false
+                        message = "Lần đầu cập nhật cần cấp quyền cài " +
+                            "đặt cho Nflix (chỉ 1 lần) — cấp xong quay " +
+                            "lại bấm Cập nhật tiếp."
+                        context.startActivity(
+                            com.example.nflix.data.UpdateManager
+                                .installPermissionIntent(context)
+                        )
+                    } else {
+                        startDownload()
+                    }
+                }) {
+                    Text(
+                        "Cập nhật",
+                        color = NflixViolet,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                }
+                else -> Unit
+            }
+        },
+        dismissButton = {
+            if (!info.force && progress == null && downloaded == null) {
+                TextButton(onClick = onLater) {
+                    Text("Để sau", color = NflixTextMuted)
+                }
+            }
+        }
+    )
 }

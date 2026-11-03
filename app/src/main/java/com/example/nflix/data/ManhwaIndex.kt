@@ -140,7 +140,11 @@ object ManhwaIndex {
         }
         val titles = shelf.distinctBy { it.slug }
         val entries = mutableListOf<ManhwaIndexEntry>()
-        for (batch in titles.chunked(6)) {
+        // 1.3.4: batch 6 → 3 parallel detail fetches — the build runs
+        // while the user may be reading, and 6-wide batches against
+        // the fragile TruyenQQ hosts starved the reader's own loads
+        // (Lý Thấm's reader dossier).
+        for (batch in titles.chunked(3)) {
             val built = batch.map { item ->
                 async {
                     val detail = try {

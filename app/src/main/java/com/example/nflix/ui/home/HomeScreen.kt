@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -74,6 +75,12 @@ fun HomeScreen(
     val state by viewModel.state.collectAsState()
     val continueList = state.continueList
     var showAll by remember { mutableStateOf<String?>(null) }
+    // 1.3.4: update reminder line (approved design) — stays on Home
+    // while a newer release exists, even after "Để sau"; tapping it
+    // reopens the shell's update dialog.
+    val homeContext = LocalContext.current
+    val nflixApp = homeContext.applicationContext as com.example.nflix.NflixApp
+    val pendingUpdate by nflixApp.updateInfo.collectAsState()
 
     when (showAll) {
         "continue" -> {
@@ -132,6 +139,27 @@ fun HomeScreen(
     }
 
     LazyColumn(modifier = modifier.fillMaxSize().background(NflixBackground)) {
+        if (pendingUpdate != null) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(NflixSurface)
+                        .clickable { nflixApp.updateDialogOpen.value = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Có bản cập nhật ${pendingUpdate!!.versionName} — chạm để cập nhật",
+                        color = NflixViolet,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
         item {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -295,9 +323,10 @@ fun HomeScreen(
         }
 
         // 1.3.3: the V2 "Bộ sưu tập" shelf (Cobe editorial collections)
-        // is REMOVED — Phim is KKPhim-only per user order 2026-11-03
-        // 09:42, and KKPhim publishes no equivalent editorial lists to
-        // replace it with.
+        // was REMOVED under the KKPhim-only order of 2026-11-03 09:42.
+        // 1.3.4: Phim is Cobe-only again, so the shelf COULD return —
+        // it stays out of this round by scope discipline (noted to
+        // the user in the 1.3.4 delivery report).
 
         item { Spacer(Modifier.height(24.dp)) }
     }

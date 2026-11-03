@@ -65,6 +65,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.PlayerView
 import com.example.nflix.data.AdBlock
+import com.example.nflix.data.AdCutPlaylistParserFactory
 import com.example.nflix.data.AppSettings
 import com.example.nflix.player.PlaybackKind
 import com.example.nflix.player.PlayerUiState
@@ -214,10 +215,15 @@ private fun PlayerScreen(
     var showQuickSettings by remember { mutableStateOf(false) }
     var portrait by remember { mutableStateOf(false) }
     var playbackError by remember { mutableStateOf<String?>(null) }
+    /** 1.3.4: the REAL technical error under the friendly headline. */
+    var playbackErrorDetail by remember { mutableStateOf<String?>(null) }
     var reportSaved by remember { mutableStateOf(false) }
     val playerScope = androidx.compose.runtime.rememberCoroutineScope()
     var retryKey by remember { mutableIntStateOf(0) }
-    var autoSwitchedSlug by remember { mutableStateOf<String?>(null) }
+    // 1.3.4: auto-switch bookkeeping — which episode the tried-set
+    // belongs to, and which server indices it already burned.
+    var autoSwitchEpisode by remember { mutableStateOf<String?>(null) }
+    var triedServers by remember { mutableStateOf<Set<Int>>(emptySet()) }
 
     fun applyQualityCap(cap: Int) {
         qualityCap = cap
@@ -233,6 +239,7 @@ private fun PlayerScreen(
         if (state.kind != PlaybackKind.STREAM || ep.streamUrl.isBlank()) return@LaunchedEffect
         ended = false
         playbackError = null
+        playbackErrorDetail = null
         reportSaved = false
         val upstreamFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 13) Nflix/1.0")
@@ -249,7 +256,18 @@ private fun PlayerScreen(
             .setCacheWriteDataSinkFactory(
                 CacheDataSink.Factory().setCache(appRef.videoCache)
             )
+        // 1.3.3b: media playlists pass through the mid-roll ad
+        // cutter (HlsAdFilter) on their way into the parser — spliced
+        // gambling-ad blocks are removed before a timeline exists.
+        // The filter is fail-open (any doubt → original playlist) and
+        // reports only REAL removals back into the VM state, which
+        // the controls surface as "Đã cắt quảng cáo: ~Xs" when > 0.
         val source = HlsMediaSource.Factory(dataSource)
+            .setPlaylistParserFactory(
+                AdCutPlaylistParserFactory { url, report ->
+                    viewModel.recordAdCut(url, report)
+                }
+            )
             .createMediaSource(MediaItem.fromUri(ep.streamUrl))
         exo.setMediaSource(source)
         exo.prepare()
@@ -286,15 +304,27 @@ private fun PlayerScreen(
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                // Never sit on a silent black screen (user report 2026-11-01):
-                // first try ONE silent switch to the next server; if that also
-                // fails (or there is no other server), surface a real error.
+                // Never sit on a silent black screen (user report 2026-11-01).
+                // 1.3.4: the silent rescue now walks EVERY untried
+                // server in probe order (alive first) instead of one
+                // blind (index + 1) hop — and when it runs out, the
+                // card shows the REAL error under the friendly
+                // headline (the network audit found the old mapping
+                // destroyed the evidence: 403/5xx and the canned text
+                // were indistinguishable afterwards).
                 isBuffering = false
                 val s = viewModel.state.value
-                val servers = s.detail?.servers ?: emptyList()
-                if (servers.size > 1 && autoSwitchedSlug != s.episode?.slug) {
-                    autoSwitchedSlug = s.episode?.slug
-                    viewModel.switchServer((s.serverIndex + 1) % servers.size, exo.currentPosition)
+                val slug = s.episode?.slug
+                if (autoSwitchEpisode != slug) {
+                    autoSwitchEpisode = slug
+                    triedServers = emptySet()
+                }
+                val next = viewModel.nextAutoServer(triedServers + s.serverIndex)
+                if (next != null) {
+                    triedServers = triedServers + s.serverIndex
+                    playbackError = null
+                    playbackErrorDetail = null
+                    viewModel.switchServer(next, exo.currentPosition)
                 } else {
                     playbackError = when (error.errorCode) {
                         androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
@@ -304,6 +334,17 @@ private fun PlayerScreen(
                             "Không kết nối được tới server phát. Kiểm tra mạng rồi thử lại."
                         else ->
                             "Không phát được video từ server này. Hãy thử lại hoặc đổi server."
+                    }
+                    playbackErrorDetail = buildString {
+                        append(error.errorCodeName)
+                        error.message?.takeIf { it.isNotBlank() }
+                            ?.let { append(" · ").append(it) }
+                        error.cause?.let { cause ->
+                            append(" · nguyên nhân: ")
+                            append(cause.javaClass.simpleName)
+                            cause.message?.takeIf { it.isNotBlank() }
+                                ?.let { append(": ").append(it) }
+                        }
                     }
                 }
             }
@@ -438,6 +479,16 @@ private fun PlayerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(playbackError!!, color = Color.White, fontSize = 14.sp)
+                // 1.3.4: the technical error, small and muted — one
+                // screenshot now settles WHAT the server actually did.
+                playbackErrorDetail?.let { detail ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        detail,
+                        color = NflixTextMuted,
+                        fontSize = 11.sp
+                    )
+                }
                 Spacer(Modifier.height(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -484,7 +535,10 @@ private fun PlayerScreen(
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.clickable(enabled = !reportSaved) {
                         val s = state
-                        val errorText = playbackError ?: ""
+                        // 1.3.4: the report carries the technical
+                        // detail too, not only the friendly headline.
+                        val errorText = listOfNotNull(playbackError, playbackErrorDetail)
+                            .joinToString("\n")
                         playerScope.launch {
                             withContext(Dispatchers.IO) {
                                 com.example.nflix.data.ReportStore.add(
@@ -736,6 +790,20 @@ private fun EmbedPlayer(
     var reportSaved by remember(state.embedUrl) { mutableStateOf(false) }
     val embedScope = androidx.compose.runtime.rememberCoroutineScope()
     val servers = state.detail?.servers ?: emptyList()
+    // 1.3.4: a main-frame embed failure first advances through the
+    // untried candidates (other groups + same-group variants, real
+    // streams first — see PlayerViewModel.failoverEmbed); only when
+    // none are left does the error card appear, carrying the REAL
+    // error. The candidate list is built in the background at apply
+    // time, so a fast failure retries the call once after a short
+    // wait before giving up.
+    fun onEmbedFailed(realError: String) {
+        if (viewModel.failoverEmbed()) return
+        embedScope.launch {
+            kotlinx.coroutines.delay(1500)
+            if (!viewModel.failoverEmbed()) embedError = realError
+        }
+    }
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (state.embedUrl.isNotBlank()) {
             AndroidView(
@@ -764,7 +832,13 @@ private fun EmbedPlayer(
                                 error: WebResourceError?
                             ) {
                                 if (request?.isForMainFrame == true) {
-                                    embedError = "Không tải được trang phát của server này. Hãy thử lại hoặc đổi server."
+                                    val desc = error?.description?.toString()
+                                        ?.takeIf { it.isNotBlank() }
+                                    onEmbedFailed(
+                                        "Không tải được trang phát của server này" +
+                                            (desc?.let { " ($it)" } ?: "") +
+                                            ". Hãy thử lại hoặc đổi server."
+                                    )
                                 }
                             }
 
@@ -775,7 +849,9 @@ private fun EmbedPlayer(
                             ) {
                                 if (request?.isForMainFrame == true) {
                                     val code = errorResponse?.statusCode ?: 0
-                                    embedError = "Server embed trả lỗi HTTP $code. Hãy thử lại hoặc đổi server."
+                                    onEmbedFailed(
+                                        "Server embed trả lỗi HTTP $code. Hãy thử lại hoặc đổi server."
+                                    )
                                 }
                             }
                         }

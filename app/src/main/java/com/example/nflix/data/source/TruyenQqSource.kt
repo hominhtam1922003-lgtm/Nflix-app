@@ -38,10 +38,13 @@ class TruyenQqSource(
         // read budget) never tripped it and a page load could hang
         // forever (dossier truyen-hang-133 §1). callTimeout bounds the
         // WHOLE request, drip included. Same fix as CobeSource (1.3.2).
+        // 1.3.4: ceiling tightened 30s → 10s per host — sequential
+        // twin-host failover meant a dripping primary could burn a
+        // minute per call chain (Lý Thấm's detail dossier).
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(25, TimeUnit.SECONDS)
-            .callTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(10, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()
@@ -154,7 +157,7 @@ class TruyenQqSource(
         parseListing(getDoc("/the-loai/manhwa?page=$page"), Family.MANHWA)
 
     /** Scoped listing parse: .listing when present, else document minus #owl-slide. */
-    private fun parseListing(doc: Document, family: Family = Family.TRUYEN): List<TitleItem> {
+    private suspend fun parseListing(doc: Document, family: Family = Family.TRUYEN): List<TitleItem> {
         doc.selectFirst(".listing")?.let { return parseCards(it, family) }
         val cleaned = doc.clone()
         cleaned.select("#owl-slide").remove()
@@ -235,10 +238,12 @@ class TruyenQqSource(
         return out
     }
 
-    private fun parseCards(
+    // 1.3.4: card extraction runs on Default, not the caller's Main
+    // dispatcher (Dương Tử S1/S4 family of fixes).
+    private suspend fun parseCards(
         scope: org.jsoup.nodes.Element,
         family: Family = Family.TRUYEN
-    ): List<TitleItem> {
+    ): List<TitleItem> = withContext(Dispatchers.Default) {
         val seen = LinkedHashMap<String, TitleItem>()
         for (card in scope.select("div.item")) {
             val anchor = card.select("a[href]").firstOrNull { a ->
@@ -275,7 +280,7 @@ class TruyenQqSource(
                 updatedLabel = card.selectFirst(".time")?.text()?.trim().orEmpty()
             )
         }
-        return seen.values.toList()
+        seen.values.toList()
     }
 
     /**
@@ -283,7 +288,11 @@ class TruyenQqSource(
      * TruyenQQ manhwa shelf carry MANHWA ids so their Detail/Reader state
      * lives with the Manhwa family (same record, different shelf).
      */
-    suspend fun detail(slug: String, family: Family = Family.TRUYEN): TitleDetail {
+    // 1.3.4: the whole extraction runs on Default (Dương Tử S4) —
+    // it used to run on the caller's Main dispatcher, and its
+    // chapter dedupe below was O(k²) in the chapter count.
+    suspend fun detail(slug: String, family: Family = Family.TRUYEN): TitleDetail =
+        withContext(Dispatchers.Default) {
         val doc = getDoc("/$slug")
         val ogTitle = doc.selectFirst("meta[property=og:title]")?.attr("content").orEmpty()
         val ogImage = doc.selectFirst("meta[property=og:image]")?.attr("content").orEmpty()
@@ -291,11 +300,15 @@ class TruyenQqSource(
         val name = ogTitle.substringBefore(" [Tới").substringBefore(" - ").trim()
             .ifBlank { doc.title().substringBefore(" |").trim() }
         val chapters = mutableListOf<ChapterItem>()
+        // 1.3.4: HashSet dedupe — the old chapters.any{} scan inside
+        // this loop was O(k²) (a 1,500-chapter title = ~10⁶ compares
+        // in one Main-thread stall, Dương Tử S4).
+        val seenNums = HashSet<Float>()
         val chapterRegex = Regex("/${Regex.escape(slug)}/chapter-(\\d+(?:\\.\\d+)?)")
         for (a in doc.select("a[href]")) {
             val m = chapterRegex.find(a.attr("href")) ?: continue
             val num = m.groupValues[1].toFloatOrNull() ?: continue
-            if (chapters.any { it.number == num }) continue
+            if (!seenNums.add(num)) continue
             chapters.add(
                 ChapterItem(
                     label = "Chap ${formatNum(num)}",
@@ -341,7 +354,7 @@ class TruyenQqSource(
             desc.contains("Hoàn thành", true) -> "Hoàn thành"
             else -> ""
         }
-        return TitleDetail(
+        TitleDetail(
             item = item,
             description = desc,
             status = status,

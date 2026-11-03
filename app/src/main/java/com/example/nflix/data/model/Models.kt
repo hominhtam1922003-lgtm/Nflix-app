@@ -23,18 +23,20 @@ enum class Family(val label: String) {
 data class TitleItem(
     val id: String,                 // "<family>:<source>:<slug>"
     val family: Family,
-    val sourceId: String,           // "kkphim", "hhkungfu", "nettruyen", ...
+    val sourceId: String,           // "cobe", "hhkungfu", "nettruyen", ... ("kkphim" = legacy rows, pre-1.3.4)
     val slug: String,
     val name: String,
     val originName: String = "",
     val posterUrl: String = "",     // vertical art
     val thumbUrl: String = "",      // horizontal art
     /**
-     * Country-law fix (2026-11-01): last-resort cover URL from the OTHER
-     * catalog (KKPhim poster for a Cobe item whose own art is dead at the
-     * source — measured: naruto-shippuden's Cobe poster AND thumb 404).
-     * Filled by AnimeCatalog's background enrichment, never persisted;
-     * the display chain tries the item's own art first, always.
+     * Country-law fix (2026-11-01): last-resort cover URL for a Cobe
+     * item whose own art is dead at the source (measured:
+     * naruto-shippuden's Cobe poster AND thumb 404). Filled from
+     * AnimeCatalog's persisted fallback cache (the fetcher that built
+     * it died with KKPhim in 1.3.4 — cached entries still apply),
+     * never persisted on the item itself; the display chain tries
+     * the item's own art first, always.
      */
     val posterFallbackUrl: String = "",
     val quality: String = "",       // "FHD" / "HD" / "4K" / "" (no badge)
@@ -123,13 +125,8 @@ data class TitleDetail(
     val directors: List<String> = emptyList(),
     val servers: List<ServerGroup> = emptyList(),   // video families
     val chapters: List<ChapterItem> = emptyList(),  // comic families
-    val trailerUrl: String = "",                    // YouTube trailer (KKPhim trailer_url), "" when none
+    val trailerUrl: String = "",                    // YouTube trailer, "" when none
     val genreLinks: List<Pair<String, String>> = emptyList(), // (label, slug) — powers "Cùng thể loại"
-    // 1.1.1 (N1): true when the merged front TRIED CobePhim for this title
-    // and the source itself was unreachable (not merely "does not carry
-    // it"). The Detail screen must say so out loud — a dead source used to
-    // vanish silently, leaving the user staring at one KKPhim server.
-    val cobeFailed: Boolean = false,
     /**
      * 1.3.1: honest load note from the source adapter — set when the
      * detail was recovered through a fallback path, or when the page

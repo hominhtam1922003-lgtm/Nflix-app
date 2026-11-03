@@ -51,7 +51,11 @@ class NetTruyenSource(
             // 1.3.3: hard whole-request ceiling — readTimeout alone is
             // an inactivity timeout that a slow-dripping host defeats
             // (dossier truyen-hang-133 §6.1). Same fix as TruyenQQ.
-            .callTimeout(30, TimeUnit.SECONDS)
+            // 1.3.4: ceiling tightened 30s → 10s PER HOST — the mirror
+            // failover is sequential, so 30s/host meant a dripping
+            // first host burned a full minute per call chain before
+            // the mirror got its turn (Lý Thấm's reader dossier).
+            .callTimeout(10, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 chain.proceed(
                     chain.request().newBuilder()
@@ -115,7 +119,12 @@ class NetTruyenSource(
 
     private suspend fun getDoc(path: String): Document {
         val (host, html) = fetchRaw(path)
-        return Jsoup.parse(html, host)
+        // 1.3.4: Jsoup.parse used to run on the CALLER's dispatcher —
+        // every UI caller is viewModelScope (Main), so parsing ~250KB
+        // pages queued up on the UI thread and froze swiping (Dương
+        // Tử S1: this was the only one of the 6 sources parsing off
+        // the IO dispatcher). Parse here, on IO, with the fetch.
+        return withContext(Dispatchers.IO) { Jsoup.parse(html, host) }
     }
 
     /** GET pinned to ONE host — never crosses mirrors (see [fetchRaw]). */
@@ -164,8 +173,12 @@ class NetTruyenSource(
         )
     }
 
-    private fun parseItems(doc: Document, family: Family = Family.MANHWA): List<TitleItem> =
-        doc.select("div.item, .item").mapNotNull { parseItem(it, family) }.distinctBy { it.slug }
+    // 1.3.4: DOM extraction also moves to IO with the parse (Dương
+    // Tử S1) — callers are all suspend functions on viewModelScope.
+    private suspend fun parseItems(doc: Document, family: Family = Family.MANHWA): List<TitleItem> =
+        withContext(Dispatchers.IO) {
+            doc.select("div.item, .item").mapNotNull { parseItem(it, family) }.distinctBy { it.slug }
+        }
 
     // ------------------------------------------------------------------
     // 1.3.2: whole-site lists — the Truyện tab's FALLBACK shelves for
@@ -246,7 +259,10 @@ class NetTruyenSource(
         return parseItems(getDoc("/tim-truyen?keyword=$q"))
     }
 
-    suspend fun detail(slug: String): TitleDetail {
+    // 1.3.4: the whole detail extraction (parse + chapter service +
+    // DOM walks) runs on IO (Dương Tử S1) — it used to run on the
+    // caller's Main dispatcher.
+    suspend fun detail(slug: String): TitleDetail = withContext(Dispatchers.IO) {
         // 1.3.3: remember WHICH mirror served this page — the chapter
         // service below is keyed by a comicId parsed out of THIS page,
         // and comicIds are host-local: asking the other mirror about
@@ -339,7 +355,7 @@ class NetTruyenSource(
             episodeCount = total,
             genres = genreLinks.map { it.first }
         )
-        return TitleDetail(
+        TitleDetail(
             item = item,
             description = desc,
             status = status,

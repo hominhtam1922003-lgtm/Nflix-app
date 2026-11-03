@@ -14,6 +14,8 @@ import com.example.nflix.data.matchesVersion
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.toEntity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,22 +24,26 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Phim-tab filter: kind + category + country + year + status + version. Empty/0 = all. */
+/**
+ * Phim-tab filter: kind + category + year + status + version. Empty/0 = all.
+ * 1.3.4: the country facet is GONE — Cobe records carry no country
+ * field, so no honest country filter exists on the Cobe-only catalog.
+ */
 data class PhimFilter(
     val kind: String = "phim-bo",
     val category: String = "",
-    val country: String = "",
     val year: Int = 0,
     val status: Int = 0,
     /** V2 (A1): PHIÊN BẢN key (VersionFilter) — filtered LOCALLY. */
     val version: String = ""
 ) {
     val isDefault: Boolean
-        get() = kind == "phim-bo" && category.isEmpty() && country.isEmpty() &&
+        get() = kind == "phim-bo" && category.isEmpty() &&
             year == 0 && status == 0 && version.isEmpty()
 }
 
@@ -104,7 +110,7 @@ data class FamilyUiState(
     val donghuaGenre: Pair<String, String>? = null,
     /** Donghua status filter: 0 all / 1 Đang ra tiếp / 2 Trọn bộ. */
     val donghuaStatus: Int = 0,
-    /** A4: "Sắp chiếu" shelf of the Phim tab (KKPhim phim-sap-chieu list). */
+    /** A4: "Sắp chiếu" shelf — inert since 1.3.4 (its KKPhim feed is gone, Cobe has none). */
     val comingSoon: List<TitleItem> = emptyList(),
     /** A8: "Mới tinh" shelf (brand-new series) of the Manhwa / Truyện tabs. */
     val freshShelf: List<TitleItem> = emptyList(),
@@ -179,6 +185,13 @@ class FamilyViewModel(
     private var manhwaIndex: List<ManhwaIndexEntry>? = null
     private var manhwaWindow = MANHWA_WINDOW_STEP
 
+    // 1.3.4: load job handles (Dương Tử S3) — starting a new load
+    // cancels the previous one instead of stacking loads (and their
+    // parses) on top of each other.
+    private var contextJob: Job? = null
+    private var manhwaListsJob: Job? = null
+    private var manhwaIndexJob: Job? = null
+
     // --- Lazily harvested completed-slug sets (status filters) ---
     private var donghuaCompletedSlugs: Set<String>? = null
     private var truyenCompletedSlugs: Set<String>? = null
@@ -193,10 +206,11 @@ class FamilyViewModel(
 
     companion object {
         /** Phim kinds — "Hoạt hình" removed per user order 2026-11-01 (Anime is its own tab now). */
+        // 1.3.4: "Chiếu rạp" is gone — Cobe has no cinema listing
+        // (measured 404); it was a KKPhim-only kind.
         val PHIM_KINDS = listOf(
             "Phim bộ" to "phim-bo",
-            "Phim lẻ" to "phim-le",
-            "Chiếu rạp" to "chieu-rap"
+            "Phim lẻ" to "phim-le"
         )
 
         /**
@@ -261,6 +275,9 @@ class FamilyViewModel(
         /** 1.3.3: total budget of one Manhwa index build. */
         private const val MANHWA_INDEX_BUDGET_MS = 120_000L
 
+        /** 1.3.4: cooldown before retrying a failed/cut index build. */
+        private const val MANHWA_INDEX_RETRY_COOLDOWN_MS = 6L * 3600 * 1000
+
         /** V2 (A1): raw source pages scanned per version-filter round. */
         private const val PHIM_VERSION_SCAN_PAGES = 3
 
@@ -290,9 +307,6 @@ class FamilyViewModel(
             loadDonghuaTrending()
             loadDonghuaRows()
             loadDonghuaGenres()
-        }
-        if (family == Family.PHIM) {
-            loadComingSoon()
         }
         if (family == Family.MANHWA) {
             loadFreshShelf()
@@ -467,7 +481,6 @@ class FamilyViewModel(
             Family.PHIM -> {
                 _state.update { it.copy(familyError = false, familyErrorDetail = "") }
                 applyPhimFilter(_state.value.phimFilter)
-                loadComingSoon()
             }
             Family.ANIME -> {
                 animePoolStarted = false
@@ -490,16 +503,9 @@ class FamilyViewModel(
         }
     }
 
-    /** A4: the "Sắp chiếu" shelf — page 1 of KKPhim's coming-soon list is enough for a shelf. */
-    private fun loadComingSoon() {
-        viewModelScope.launch {
-            try {
-                val list = app.kkPhim.comingSoon(1)
-                app.database.titleDao().upsertAll(list.map { it.toEntity() })
-                _state.update { it.copy(comingSoon = list) }
-            } catch (e: Exception) { /* shelf stays hidden */ }
-        }
-    }
+    // 1.3.4: the "Sắp chiếu" shelf is GONE — it was fed by KKPhim's
+    // coming-soon list and Cobe publishes no equivalent; the state
+    // field and its (now never-populated) shelf stay inert in the UI.
 
     /** Whole-week Donghua broadcast schedule (7 day groups), loaded on demand. */
     fun loadScheduleWeek() {
@@ -541,7 +547,8 @@ class FamilyViewModel(
             )
         }
         if (exitedBrowse) loadDonghuaRows()
-        viewModelScope.launch {
+        contextJob?.cancel()
+        contextJob = viewModelScope.launch {
             try {
                 // 1.3.2: set by the TRUYEN branch when the NetTruyen
                 // fallback served this load (published to the UI state
@@ -817,7 +824,7 @@ class FamilyViewModel(
     }
 
     // ------------------------------------------------------------------
-    // PHIM (Khối A — KKPhim only since 1.3.3, user order 09:42)
+    // PHIM (Khối A — Cobe only since 1.3.4, user order 11:39)
     // ------------------------------------------------------------------
 
     /** True while the last version-filter round still had raw source pages. */
@@ -827,8 +834,10 @@ class FamilyViewModel(
      * V2 (A1): with a PHIÊN BẢN version set, one "page" of results is a
      * ROUND of [PHIM_VERSION_SCAN_PAGES] raw source pages filtered
      * locally (the filtered-scan precedent) — version density varies,
-     * and a single raw page would starve the grid. The KKPhim API
-     * ignores version= entirely, so the server is never asked.
+     * and a single raw page would starve the grid. Version filtering
+     * has always been local (the KKPhim API ignored version=; Cobe's
+     * listings take no version facet either), so the server is never
+     * asked.
      */
     private suspend fun fetchPhim(filter: PhimFilter, page: Int): List<TitleItem> {
         if (filter.version.isEmpty()) return fetchPhimRaw(filter, page)
@@ -845,21 +854,15 @@ class FamilyViewModel(
     }
 
     private suspend fun fetchPhimRaw(filter: PhimFilter, page: Int): List<TitleItem> =
-        if (filter.kind == "chieu-rap" && filter.category.isEmpty() &&
-            filter.country.isEmpty() && filter.year == 0
-        ) {
-            // Chiếu rạp is a KKPhim-only concept; status still applies.
-            app.kkPhim.cinema(page).filter { it.matchesStatus(filter.status) }
-        } else {
-            app.mergedPhim.filteredMerged(
-                kind = filter.kind,
-                category = filter.category,
-                country = filter.country,
-                year = filter.year,
-                status = filter.status,
-                page = page
-            )
-        }
+        // 1.3.4: every Phim browse goes through the Cobe-only front —
+        // the KK cinema special case died with its source.
+        app.mergedPhim.filteredMerged(
+            kind = filter.kind,
+            category = filter.category,
+            year = filter.year,
+            status = filter.status,
+            page = page
+        )
 
     /** Phim tab: apply a new filter (from the "Lọc phim" sheet) and reload both shelves. */
     fun applyPhimFilter(filter: PhimFilter) {
@@ -1245,7 +1248,8 @@ class FamilyViewModel(
         _state.update {
             it.copy(loading = true, rowsPage = 1, familyError = false, familyErrorDetail = "")
         }
-        viewModelScope.launch {
+        manhwaListsJob?.cancel()
+        manhwaListsJob = viewModelScope.launch {
             try {
                 when {
                     // 1.3.2: index mode only when an index actually
@@ -1403,38 +1407,60 @@ class FamilyViewModel(
      * instead of taking the tab down.
      */
     private fun loadManhwaIndex() {
-        viewModelScope.launch {
-            val cached = ManhwaIndex.fromJson(app.settings.manhwaIndexJson.first())
-            val builtAt = app.settings.manhwaIndexBuiltAtMs.first()
-            if (cached.isNotEmpty()) {
-                manhwaIndex = cached
-                _state.update { it.copy(manhwaIndexReady = true) }
-                if (manhwaUsesIndex()) loadManhwaLists()
-            }
-            val stale = cached.isEmpty() ||
-                System.currentTimeMillis() - builtAt > 7L * 24 * 3600 * 1000
-            if (!stale) return@launch
-            _state.update { it.copy(manhwaIndexBuilding = true) }
-            // 1.3.3: the build gets a TOTAL budget — on timeout the old
-            // cache is kept and manhwaIndexBuilding ALWAYS clears below
-            // (a dripping TruyenQQ page used to wedge the flag forever,
-            // leaving "Đang lập chỉ mục thể loại…" on screen for good).
-            val built = try {
-                withTimeoutOrNull(MANHWA_INDEX_BUDGET_MS) {
-                    ManhwaIndex.build(app.truyenQq)
+        manhwaIndexJob?.cancel()
+        manhwaIndexJob = viewModelScope.launch {
+            // 1.3.4 (Dương Tử S2): the cache parse and the build run on
+            // Default, not Main — parsing the full index blob and the
+            // build's ~220 DOM extractions used to queue on the UI
+            // thread while the user swiped.
+            withContext(Dispatchers.Default) {
+                val cached = ManhwaIndex.fromJson(app.settings.manhwaIndexJson.first())
+                val builtAt = app.settings.manhwaIndexBuiltAtMs.first()
+                if (cached.isNotEmpty()) {
+                    manhwaIndex = cached
+                    _state.update { it.copy(manhwaIndexReady = true) }
+                    if (manhwaUsesIndex()) loadManhwaLists()
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                null
-            }
-            if (!built.isNullOrEmpty()) {
-                manhwaIndex = built
-                app.settings.setManhwaIndex(ManhwaIndex.toJson(built))
-                _state.update { it.copy(manhwaIndexReady = true, manhwaIndexBuilding = false) }
-                if (manhwaUsesIndex()) loadManhwaLists()
-            } else {
-                _state.update { it.copy(manhwaIndexBuilding = false) }
+                val stale = cached.isEmpty() ||
+                    System.currentTimeMillis() - builtAt > 7L * 24 * 3600 * 1000
+                if (!stale) return@withContext
+                // 1.3.4: defer while the reader is open — the build
+                // shares the TruyenQQ client with the reader and would
+                // starve chapter loads. Deferral is NOT a failure: no
+                // attempt is recorded, the next tab visit retries.
+                if (app.readerOpen) return@withContext
+                // 1.3.4 (Lý Thấm): 6h cooldown after a failed or cut
+                // build — a cut build used to leave no trace, so the
+                // next tab visit restarted it from zero in a loop.
+                val lastAttempt = app.settings.manhwaIndexAttemptMs.first()
+                if (System.currentTimeMillis() - lastAttempt < MANHWA_INDEX_RETRY_COOLDOWN_MS) {
+                    return@withContext
+                }
+                _state.update { it.copy(manhwaIndexBuilding = true) }
+                // 1.3.3: the build gets a TOTAL budget — on timeout the
+                // old cache is kept and manhwaIndexBuilding ALWAYS
+                // clears below (a dripping TruyenQQ page used to wedge
+                // the flag forever, leaving "Đang lập chỉ mục thể loại…"
+                // on screen for good).
+                val built = try {
+                    withTimeoutOrNull(MANHWA_INDEX_BUDGET_MS) {
+                        ManhwaIndex.build(app.truyenQq)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                if (!built.isNullOrEmpty()) {
+                    manhwaIndex = built
+                    app.settings.setManhwaIndex(ManhwaIndex.toJson(built))
+                    _state.update { it.copy(manhwaIndexReady = true, manhwaIndexBuilding = false) }
+                    if (manhwaUsesIndex()) loadManhwaLists()
+                } else {
+                    // Record the failed attempt for the cooldown above.
+                    app.settings.setManhwaIndexAttempt()
+                    _state.update { it.copy(manhwaIndexBuilding = false) }
+                }
             }
         }
     }

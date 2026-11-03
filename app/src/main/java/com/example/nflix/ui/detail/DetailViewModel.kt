@@ -16,17 +16,22 @@ import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.source.CobePlay
 import com.example.nflix.data.source.CobeSource
-import com.example.nflix.data.source.KkPhimSource
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.toEntity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 fun fmtNum(n: Float): String = if (n % 1f == 0f) n.toInt().toString() else n.toString()
+
+/** 1.3.4: total budget of one Truyện detail load (the branch was uncapped). */
+private const val TRUYEN_DETAIL_BUDGET_MS = 25_000L
 
 /** One cell in the episode/chapter grid. */
 data class GridUnit(
@@ -73,6 +78,9 @@ class DetailViewModel(
     private val _state = MutableStateFlow(DetailUiState())
     val state: StateFlow<DetailUiState> = _state.asStateFlow()
 
+    /** 1.3.4: handle of the running detail load — retry cancels it first. */
+    private var detailJob: Job? = null
+
     /** True once the user picks a server by hand — auto-fastest must not override that. */
     private var userPickedServer = false
     private var autoFastest = true
@@ -88,30 +96,42 @@ class DetailViewModel(
             val st = app.database.userStateDao().get(item.id)
             _state.update { it.copy(userState = st) }
         }
-        viewModelScope.launch {
+        launchLoad()
+    }
+
+    /** 1.3.4: the Detail error block's "Thử lại" — reloads for real. */
+    fun retry() {
+        _state.update { it.copy(loading = true, detailError = null, detail = null) }
+        launchLoad()
+    }
+
+    private fun launchLoad() {
+        detailJob?.cancel()
+        detailJob = viewModelScope.launch {
             try {
                 val rawDetail = when (item.sourceId) {
-                    // 1.3.3: Phim/Anime go through the routing front —
-                    // Phim is KKPhim-only inside detailFor (whatever
-                    // sourceId the item carries); Anime keeps its
-                    // Cobe-first law there.
+                    // Phim/Anime go through the routing front —
+                    // Cobe-only inside detailFor since 1.3.4 (whatever
+                    // sourceId an older build saved on the item).
                     "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)
                     // 1.2.0: a TruyenQQ item can belong to MANHWA (genre
                     // results of the Manhwa tab) — keep its own family.
-                    "truyenqq" -> app.truyenQq.detail(item.slug, item.family)
+                    // 1.3.4: the branch runs under a total cap with a
+                    // by-name NetTruyen fallback for Truyện titles.
+                    "truyenqq" -> truyenDetailWithFallback()
                     else -> when (item.family) {
                         Family.PHIM, Family.ANIME -> app.mergedPhim.detailFor(item)
                         Family.DONGHUA -> app.hhKungfu.detail(item.slug)
                         Family.MANHWA -> app.netTruyen.detail(item.slug)
-                        Family.TRUYEN -> app.truyenQq.detail(item.slug)
+                        Family.TRUYEN -> truyenDetailWithFallback()
                     }
                 }
                 // Country-law fix: a Cobe anime title whose own cover
                 // art is dead at the source (measured: naruto-shippuden
-                // 404s everywhere on Cobe) gets the KKPhim poster as its
-                // last-resort cover — its own art stays primary.
+                // 404s everywhere on Cobe) gets a cached fallback cover
+                // as its last resort — its own art stays primary.
                 val detail = if (item.family == Family.ANIME) {
                     rawDetail.copy(
                         item = app.animeCatalog.withPosterFallbackLoaded(rawDetail.item)
@@ -176,10 +196,71 @@ class DetailViewModel(
                         _state.update { it.copy(userState = next) }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, detailError = shortError(e)) }
             }
         }
+    }
+
+    /**
+     * 1.3.4: Truyện detail under a TOTAL 25s cap (this branch used to
+     * be the only uncapped load in the app — two sequential host
+     * failovers could hold the black loading screen for ~60s and the
+     * failure it finally produced was the generic one, Lý Thấm). When
+     * TruyenQQ fails outright or times out, a TRUYỆN title falls back
+     * BY NAME to NetTruyen: a STRICT normalized-name match whose
+     * chapter list is non-empty; the served detail carries a loadNote
+     * disclosing the serving source. No match → the original TruyenQQ
+     * error stands, shown verbatim.
+     */
+    private suspend fun truyenDetailWithFallback(): TitleDetail {
+        var primaryError: Exception? = null
+        val primary = try {
+            withTimeoutOrNull(TRUYEN_DETAIL_BUDGET_MS) {
+                app.truyenQq.detail(item.slug, item.family)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            primaryError = e
+            null
+        }
+        if (primary != null) return primary
+        if (item.family == Family.TRUYEN) {
+            val fallback = try {
+                val target = normalizeTitleName(item.name)
+                val match = app.netTruyen.search(item.name)
+                    .firstOrNull { normalizeTitleName(it.name) == target }
+                match?.let { app.netTruyen.detail(it.slug) }
+                    ?.takeIf { it.chapters.isNotEmpty() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (fallback != null) {
+                return fallback.copy(
+                    loadNote = "TruyenQQ không phản hồi — đang hiển thị từ nguồn NetTruyen."
+                )
+            }
+        }
+        throw primaryError
+            ?: IllegalStateException(
+                "TruyenQQ quá ${TRUYEN_DETAIL_BUDGET_MS / 1000} giây không phản hồi"
+            )
+    }
+
+    /** Diacritic/punctuation-insensitive name key for the STRICT match above. */
+    private fun normalizeTitleName(name: String): String {
+        val decomposed = java.text.Normalizer.normalize(
+            name.lowercase(), java.text.Normalizer.Form.NFD
+        )
+        val noMarks = decomposed.replace(Regex("\\p{Mn}+"), "")
+            .replace('đ', 'd')
+        return noMarks.replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ").trim()
     }
 
     /**
@@ -220,16 +301,17 @@ class DetailViewModel(
     fun currentVersionPriority(): String = versionPriority
 
     /**
-     * A4: a KKPhim "sắp chiếu" title — detail loaded fine but there is no
-     * playable server yet (trailer only). The page switches its main button
-     * to "Theo dõi" and hides the empty episode UI. Comics/Donghua never
-     * count: their empty lists mean a load failure, not a pre-release.
+     * A4: a Phim/Anime title whose detail loaded fine but has no
+     * playable server yet (pre-release / trailer only). The page switches
+     * its main button to "Theo dõi" and hides the empty episode UI.
+     * Comics/Donghua never count: their empty lists mean a load failure,
+     * not a pre-release.
      */
     fun isAwaitingRelease(): Boolean {
         val d = _state.value.detail ?: return false
         if (isComic) return false
-        val kk = item.sourceId == "kkphim" || item.family == Family.PHIM || item.family == Family.ANIME
-        return kk && d.servers.isEmpty()
+        val phimLike = item.family == Family.PHIM || item.family == Family.ANIME
+        return phimLike && d.servers.isEmpty()
     }
 
     /**
@@ -251,7 +333,20 @@ class DetailViewModel(
                     val best = statuses.entries
                         .filter { it.value.isAlive }
                         .minByOrNull { it.value.ms ?: Long.MAX_VALUE }
-                    if (best != null) idx = best.key
+                    if (best != null) {
+                        idx = best.key
+                    } else {
+                        // 1.3.4: nothing measured alive — at least do
+                        // not sit on a group already known to be a
+                        // pure embed when a stream-resolving group
+                        // exists (the Doraemon failure shape: the
+                        // language default landed on a blocked embed
+                        // while a direct m3u8 group was available).
+                        val nonEmbed = statuses.entries
+                            .filter { it.value.state != ServerStatus.State.EMBED }
+                            .minByOrNull { it.key }
+                        if (nonEmbed != null) idx = nonEmbed.key
+                    }
                 }
                 s.copy(probingServers = false, serverStatuses = statuses, serverIndex = idx)
             }
@@ -319,9 +414,10 @@ class DetailViewModel(
         val pool: List<TitleItem> = when (self.family) {
             Family.PHIM -> {
                 val slug = detail.genreLinks.firstOrNull()?.second
-                    ?: kkGenreSlug(self.genres.firstOrNull())
                     ?: return emptyList()
-                app.kkPhim.byCategory(slug, page = 1)
+                // 1.3.4: Cobe's own genre listing serves the shelf
+                // (KK dropped); genreLinks carry Cobe slugs now.
+                app.cobe.categoryPage(slug, page = 1, kind = "").first
             }
             Family.ANIME -> {
                 // 1.2.0 (Khối B): related anime comes from the Cobe pool
@@ -373,12 +469,6 @@ class DetailViewModel(
             }
         }
         return pool.filter { it.slug != self.slug }.take(12)
-    }
-
-    /** KKPhim genre label to slug via the verified CATEGORIES table (fallback path). */
-    private fun kkGenreSlug(name: String?): String? {
-        if (name.isNullOrBlank()) return null
-        return KkPhimSource.CATEGORIES.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
     }
 
     /** All units ascending by number. */

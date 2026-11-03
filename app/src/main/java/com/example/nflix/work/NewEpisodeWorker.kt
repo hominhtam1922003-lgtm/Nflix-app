@@ -55,10 +55,9 @@ class NewEpisodeWorker(
             val item = entity.toItem()
             val total = runCatching {
                 val detail = when (item.sourceId) {
-                    // 1.3.3: Phim/Anime totals come from detailFor —
-                    // KKPhim counts for Phim, the Cobe-first Anime
-                    // detail for Anime. Baseline/seen semantics are
-                    // unchanged.
+                    // Phim/Anime totals come from detailFor —
+                    // Cobe counts for both since 1.3.4 (KK dropped).
+                    // Baseline/seen semantics are unchanged.
                     "kkphim", "cobe" -> app.mergedPhim.detailFor(item)
                     "hhkungfu" -> app.hhKungfu.detail(item.slug)
                     "nettruyen" -> app.netTruyen.detail(item.slug)

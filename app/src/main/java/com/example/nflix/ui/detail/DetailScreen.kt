@@ -143,7 +143,7 @@ fun DetailScreen(
                         CircleButton(R.drawable.ic_share, "Chia sẻ") {
                             // B4: name + last opened unit (or newest) + the
                             // source's REAL public URL when one exists
-                            // (KKPhim has none — name only, never invented).
+                            // (never invented — see ShareLinks).
                             val send = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(
@@ -344,20 +344,11 @@ fun DetailScreen(
                                 modifier = Modifier.clickable { showServerSheet = true }
                             )
                         }
-                        // 1.1.1 (N1): when the CobePhim source itself was
-                        // unreachable, say so right under the server bar —
-                        // the merged detail silently fell back to KKPhim
-                        // only, and the user could not tell a whole source
-                        // was missing. Informational only; nothing blocked.
-                        if (detail?.cobeFailed == true) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Nguồn Cobe: không kết nối được",
-                                color = NflixAmber,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
-                        }
+                        // 1.3.4: the old "Nguồn Cobe: không kết nối
+                        // được" banner is removed — nothing has set
+                        // TitleDetail.cobeFailed since 1.3.3 (the flag
+                        // is gone too); a Cobe failure now surfaces as
+                        // the detail's real error, not a side banner.
                     }
 
                     Spacer(Modifier.height(18.dp))
@@ -470,11 +461,20 @@ fun DetailScreen(
 
             item {
                 if (state.loading) {
-                    Box(
+                    // 1.3.4: text under the spinner — a bare spinner on
+                    // the near-black backdrop read as a frozen black
+                    // screen ("đen thui") while a slow source loaded.
+                    Column(
                         Modifier.fillMaxWidth().padding(36.dp),
-                        contentAlignment = Alignment.Center
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         CircularProgressIndicator(color = NflixViolet)
+                        Text(
+                            "Đang tải chi tiết…",
+                            color = NflixTextMuted,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
                     }
                 } else if (awaiting) {
                     // A4: empty grid replaced by a clean note — no error frame.
@@ -489,17 +489,32 @@ fun DetailScreen(
                     // error when the detail call failed, the source's
                     // own load note when it loaded abnormally (Donghua
                     // fallback/empty), the generic line only otherwise.
-                    Text(
-                        when {
-                            state.detailError != null ->
-                                "Không tải được chi tiết: ${state.detailError}"
-                            state.loadNote.isNotBlank() -> state.loadNote
-                            else -> "Chưa lấy được danh sách — kiểm tra mạng rồi mở lại."
-                        },
-                        color = NflixTextMuted,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)
-                    )
+                    // 1.3.4: a real failure also gets a working "Thử
+                    // lại" — reopening the page was the only retry and
+                    // it re-ran the same uncapped load.
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 24.dp)) {
+                        Text(
+                            when {
+                                state.detailError != null ->
+                                    "Không tải được chi tiết: ${state.detailError}"
+                                state.loadNote.isNotBlank() -> state.loadNote
+                                else -> "Chưa lấy được danh sách — kiểm tra mạng rồi mở lại."
+                            },
+                            color = NflixTextMuted,
+                            fontSize = 13.sp
+                        )
+                        if (state.detailError != null) {
+                            Button(
+                                onClick = { viewModel.retry() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NflixViolet
+                                ),
+                                modifier = Modifier.padding(top = 12.dp)
+                            ) {
+                                Text("Thử lại")
+                            }
+                        }
+                    }
                 } else {
                     val rows = (visible.size + 4) / 5
                     LazyVerticalGrid(

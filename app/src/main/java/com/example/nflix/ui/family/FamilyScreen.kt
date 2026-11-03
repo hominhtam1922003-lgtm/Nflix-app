@@ -59,7 +59,7 @@ import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.STATUS_COMPLETED
 import com.example.nflix.data.model.STATUS_ONGOING
 import com.example.nflix.data.model.TitleItem
-import com.example.nflix.data.source.KkPhimSource
+import com.example.nflix.data.source.CobeSource
 import com.example.nflix.ui.components.ContextChips
 import com.example.nflix.ui.components.FilterChips
 import com.example.nflix.ui.components.PosterCard
@@ -613,8 +613,7 @@ private fun filterSummary(family: Family, state: FamilyUiState): String = when (
         val parts = mutableListOf<String>()
         FamilyViewModel.PHIM_KINDS.firstOrNull { it.second == f.kind }?.first
             ?.takeIf { f.kind != "phim-bo" }?.let { parts += it }
-        KkPhimSource.CATEGORIES.firstOrNull { it.second == f.category }?.first?.let { parts += it }
-        KkPhimSource.COUNTRIES.firstOrNull { it.second == f.country }?.first?.let { parts += it }
+        CobeSource.CATEGORIES.firstOrNull { it.second == f.category }?.first?.let { parts += it }
         if (f.year > 0) parts += f.year.toString()
         com.example.nflix.data.VersionFilter.labelOf(f.version)
             .takeIf { it.isNotEmpty() && f.version.isNotEmpty() }?.let { parts += it }
@@ -795,7 +794,6 @@ private fun PhimFilterSheet(
 ) {
     var kind by remember { mutableStateOf(current.kind) }
     var category by remember { mutableStateOf(current.category) }
-    var country by remember { mutableStateOf(current.country) }
     var year by remember { mutableIntStateOf(current.year) }
     var status by remember { mutableIntStateOf(current.status) }
     var version by remember { mutableStateOf(current.version) }
@@ -805,14 +803,14 @@ private fun PhimFilterSheet(
     FilterSheetFrame(
         title = "Lọc phim",
         onReset = {
-            kind = "phim-bo"; category = ""; country = ""; year = 0; status = 0
+            kind = "phim-bo"; category = ""; year = 0; status = 0
             version = ""; query = ""
         },
         onApply = {
             // "Tất cả" loại (kind = "") falls back to phim-bo listing.
             onApply(
                 PhimFilter(
-                    kind.ifEmpty { "phim-bo" }, category, country, year, status,
+                    kind.ifEmpty { "phim-bo" }, category, year, status,
                     version = version
                 )
             )
@@ -827,20 +825,15 @@ private fun PhimFilterSheet(
                 onSelect = { kind = it }
             )
         }
+        // 1.3.4: Cobe's OWN categories (measured from its catalog —
+        // see CobeSource.CATEGORIES). The Quốc gia section is gone:
+        // Cobe records carry no country to filter by.
         FilterSection("Thể loại") {
             FilterChipRow(
-                options = (listOf("" to "Tất cả") + KkPhimSource.CATEGORIES.map { it.second to it.first })
+                options = (listOf("" to "Tất cả") + CobeSource.CATEGORIES.map { it.second to it.first })
                     .filter { it.first.isEmpty() || query.isBlank() || it.second.contains(query, ignoreCase = true) },
                 selected = category,
                 onSelect = { category = it }
-            )
-        }
-        FilterSection("Quốc gia") {
-            FilterChipRow(
-                options = (listOf("" to "Tất cả") + KkPhimSource.COUNTRIES.map { it.second to it.first })
-                    .filter { it.first.isEmpty() || query.isBlank() || it.second.contains(query, ignoreCase = true) },
-                selected = country,
-                onSelect = { country = it }
             )
         }
         FilterSection("Năm phát hành") {

@@ -65,7 +65,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.scrollBy
-import coil.compose.SubcomposeAsyncImage
+import androidx.compose.foundation.layout.defaultMinSize
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.nflix.NflixApp
 import com.example.nflix.R
 import com.example.nflix.data.AppSettings
@@ -539,10 +542,26 @@ fun ReaderScreen(
     }
 }
 
+/** 1.3.4: auto-retry backoff for transient page failures (3 tries). */
+private val READER_RETRY_BACKOFF_MS = listOf(1_000L, 2_500L, 5_000L)
+
 /**
  * One reader page. A failed page is no longer a silent hole in the chapter
  * (K6): it shows a placeholder with the page number and a per-page retry.
  * Reloading bumps a key so Coil issues a fresh request for that page only.
+ *
+ * 1.3.4 (Lý Thấm's reader dossier): three changes —
+ * (1) TRANSIENT failures retry automatically with backoff (1s → 2.5s →
+ * 5s) instead of hardening into a permanent error frame on the first
+ * dropped packet; HTTP 4xx (except 408/429) is permanent and goes
+ * straight to the manual button, which stays.
+ * (2) Plain AsyncImage instead of SubcomposeAsyncImage — subcomposition
+ * per page was a compose burst on every page of a long chapter.
+ * (3) The decode size is capped (1280×8192, inexact): a full-height
+ * original strip could decode to a ~50 MB bitmap; only extreme strips
+ * are scaled at all. Crossfade is off for reader pages (the global
+ * loader default animated every page in) and a 220dp minimum height
+ * keeps the column from jumping while a page loads.
  */
 @Composable
 private fun ReaderPageImage(
@@ -553,35 +572,73 @@ private fun ReaderPageImage(
     modifier: Modifier = Modifier
 ) {
     var reloadKey by remember(url) { mutableIntStateOf(0) }
+    var autoRetries by remember(url) { mutableIntStateOf(0) }
+    var failed by remember(url) { mutableStateOf(false) }
+    var retryPending by remember(url) { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    LaunchedEffect(retryPending) {
+        if (retryPending) {
+            kotlinx.coroutines.delay(
+                READER_RETRY_BACKOFF_MS.getOrElse(autoRetries - 1) { 5_000L }
+            )
+            retryPending = false
+            reloadKey++
+        }
+    }
+
+    if (failed) {
+        Box(
+            modifier = Modifier.fillMaxWidth().height(220.dp)
+                .background(Color(0xFF14141B)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "Trang $pageNumber chưa tải được",
+                    color = NflixTextMuted,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(NflixViolet)
+                        .clickable {
+                            autoRetries = 0
+                            failed = false
+                            reloadKey++
+                        }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text("Tải lại trang này", color = Color.White, fontSize = 13.sp)
+                }
+            }
+        }
+        return
+    }
+
     androidx.compose.runtime.key(url, reloadKey) {
-        SubcomposeAsyncImage(
-            model = url,
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(url)
+                .size(1280, 8192)
+                .precision(Precision.INEXACT)
+                .crossfade(false)
+                .build(),
             contentDescription = contentDescription,
             contentScale = contentScale,
-            modifier = modifier,
-            error = {
-                Box(
-                    modifier = Modifier.fillMaxWidth().height(220.dp)
-                        .background(Color(0xFF14141B)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "Trang $pageNumber chưa tải được",
-                            color = NflixTextMuted,
-                            fontSize = 13.sp
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(NflixViolet)
-                                .clickable { reloadKey++ }
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
-                        ) {
-                            Text("Tải lại trang này", color = Color.White, fontSize = 13.sp)
-                        }
-                    }
+            modifier = modifier.defaultMinSize(minHeight = 220.dp),
+            onError = { state ->
+                val t = state.result.throwable
+                val permanent = t is coil.network.HttpException &&
+                    t.response.code in 400..499 &&
+                    t.response.code != 408 && t.response.code != 429
+                if (!permanent && autoRetries < READER_RETRY_BACKOFF_MS.size) {
+                    autoRetries++
+                    retryPending = true
+                } else {
+                    failed = true
                 }
             }
         )

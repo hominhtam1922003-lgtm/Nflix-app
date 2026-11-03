@@ -9,6 +9,7 @@ import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
 import com.example.nflix.data.toItem
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,7 +34,7 @@ data class HomeUiState(
     val continueList: List<ShelfEntry> = emptyList(),
     val suggestedList: List<TitleItem> = emptyList(),
     val latestList: List<TitleItem> = emptyList(),
-    /** B2: today's Donghua schedule + KKPhim titles updated today (VN). */
+    /** B2: today's Donghua schedule + Phim titles updated today (VN). */
     val todayList: List<TitleItem> = emptyList(),
     /** B1: personalised picks from the user's most-watched genre. */
     val forYouList: List<TitleItem> = emptyList(),
@@ -120,6 +121,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /** 1.3.3: first real error text seen by the three tracked loaders. */
     private var loadErrorDetailText: String = ""
 
+    // 1.3.4: per-loader job handles (Dương Tử S3) — retry() used to
+    // stack a second full set of Home loads on top of the running one.
+    private var heroJob: Job? = null
+    private var latestJob: Job? = null
+    private var suggestedJob: Job? = null
+    private var todayJob: Job? = null
+    private var forYouJob: Job? = null
+
     private fun noteLoadError(e: Exception) {
         if (loadErrorDetailText.isBlank()) {
             loadErrorDetailText = e.message?.takeIf { it.isNotBlank() }
@@ -154,8 +163,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadShelves() {
         // Home's Phim shelves read the same catalog as the Phim tab
-        // (KKPhim only since 1.3.3).
-        viewModelScope.launch {
+        // (Cobe only since 1.3.4).
+        latestJob?.cancel()
+        latestJob = viewModelScope.launch {
             try {
                 val latest = nflix.mergedPhim.latestMerged(page = 1)
                 db.titleDao().upsertAll(latest.map { it.toEntity() })
@@ -169,7 +179,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
             refreshLoadError()
         }
-        viewModelScope.launch {
+        suggestedJob?.cancel()
+        suggestedJob = viewModelScope.launch {
             try {
                 val suggested = nflix.mergedPhim.byKindMerged("phim-le", page = 1, limit = 12)
                 db.titleDao().upsertAll(suggested.map { it.toEntity() })
@@ -209,13 +220,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * B2 "Hôm nay có gì": today's Donghua broadcast group (the source has a
-     * real per-day schedule) merged with KKPhim titles whose modified time
-     * falls inside today (Asia/Ho_Chi_Minh — the KKPhim adapter already
-     * normalized its timestamps to true epoch). No schedule is ever
-     * inferred for the families that don't publish one.
+     * real per-day schedule) merged with Phim titles whose updated time
+     * falls inside today (Asia/Ho_Chi_Minh — the Cobe adapter normalizes
+     * its timestamps to true epoch). No schedule is ever inferred for the
+     * families that don't publish one.
      */
     private fun loadToday() {
-        viewModelScope.launch {
+        todayJob?.cancel()
+        todayJob = viewModelScope.launch {
             val zone = java.time.ZoneId.of("Asia/Ho_Chi_Minh")
             val startOfToday = java.time.LocalDate.now(zone)
                 .atStartOfDay(zone).toEpochSecond()
@@ -244,15 +256,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun genreLinksOf(item: TitleItem): List<Pair<String, String>> =
         try {
             when (item.sourceId) {
-                "kkphim" -> nflix.kkPhim.detail(item.slug).genreLinks
-                // 1.3.3: a PHIM item saved with a Cobe identity takes
-                // its genre links from KKPhim (Phim is KK-only now);
-                // ANIME items keep reading Cobe (their own law).
-                "cobe" -> if (item.family == Family.ANIME) {
-                    nflix.cobe.detail(item.slug, item.family).genreLinks
-                } else {
-                    nflix.kkPhim.detail(item.slug).genreLinks
-                }
+                // 1.3.4: Phim AND Anime genre links both come from
+                // Cobe (KK dropped by user order); a legacy "kkphim"
+                // item re-homes by slug, exactly like detailFor.
+                "kkphim", "cobe" -> nflix.cobe.detail(item.slug, item.family).genreLinks
                 "hhkungfu" -> nflix.hhKungfu.detail(item.slug).genreLinks
                 "nettruyen" -> nflix.netTruyen.detail(item.slug).genreLinks
                 "truyenqq" -> nflix.truyenQq.detail(item.slug, item.family).genreLinks
@@ -269,9 +276,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         slug: String
     ): List<TitleItem> = try {
         when (sourceId) {
-            // Cobe genre links are KKPhim slugs by construction (the
-            // adapter maps genre names through the KKPhim table).
-            "kkphim", "cobe" -> nflix.kkPhim.byCategory(slug, page = 1, limit = 24)
+            // 1.3.4: Cobe genre links carry Cobe's own slugs — the
+            // shelf is Cobe's /the-loai listing for the same slug.
+            "kkphim", "cobe" -> nflix.cobe.categoryPage(slug, page = 1, kind = "", family = family)
+                .first.take(24)
             "hhkungfu" -> nflix.hhKungfu.byCategory(slug, page = 1)
             "nettruyen" -> nflix.netTruyen.byGenre(slug, page = 1)
             "truyenqq" -> nflix.truyenQq.byGenre(slug, page = 1)
@@ -288,7 +296,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * the shelf stays hidden rather than faking a taste profile.
      */
     private fun loadForYou() {
-        viewModelScope.launch {
+        forYouJob?.cancel()
+        forYouJob = viewModelScope.launch {
             val states = db.userStateDao().trackedOnce()
                 .filter { it.lastUnitNumber > 0 || it.favorite || it.following }
                 .sortedByDescending { it.lastTouchedEpochSec }
@@ -330,7 +339,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun loadHero() {
-        viewModelScope.launch {
+        heroJob?.cancel()
+        heroJob = viewModelScope.launch {
             try {
                 val trending = nflix.mergedPhim.byKindMerged("phim-bo", page = 1, limit = 12)
                 db.titleDao().upsertAll(trending.map { it.toEntity() })

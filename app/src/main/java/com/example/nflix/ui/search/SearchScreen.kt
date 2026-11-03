@@ -375,6 +375,8 @@ fun SearchScreen(
             // 1.3.3: the V2 "Đang được tìm nhiều" strip (Cobe view_day
             // chart) is removed — see SearchViewModel. Nothing replaces
             // it: KKPhim publishes no view counts to rank by.
+            // 1.3.4: Phim is Cobe-only now; the strip stays removed —
+            // restoring it was left out of this round on purpose.
         } else {
             if (state.searching && state.suggestions.isEmpty()) {
                 item {

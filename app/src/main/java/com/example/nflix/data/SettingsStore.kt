@@ -161,6 +161,34 @@ class SettingsStore(context: Context) {
     }
 
     /**
+     * 1.3.4: timestamp of the last FAILED or cut-short index build.
+     * A failed build used to leave no trace, so the next tab visit
+     * restarted the whole 220-detail build from zero (Lý Thấm's
+     * reader dossier) — the ViewModel now enforces a 6h cooldown
+     * after a failed attempt before trying again.
+     */
+    val manhwaIndexAttemptMs: Flow<Long> = store.data.map { p ->
+        (p[MANHWA_INDEX_ATTEMPT] ?: "0").toLongOrNull() ?: 0L
+    }
+
+    suspend fun setManhwaIndexAttempt() {
+        store.edit { it[MANHWA_INDEX_ATTEMPT] = System.currentTimeMillis().toString() }
+    }
+
+    /**
+     * 1.3.4: the update version the user dismissed with "Để sau" — the
+     * startup dialog stays quiet for that version (the Home reminder
+     * line remains); a newer release, or a forced one, pops again.
+     */
+    val dismissedUpdateVersion: Flow<String> = store.data.map { p ->
+        p[UPDATE_DISMISSED] ?: ""
+    }
+
+    suspend fun setDismissedUpdateVersion(version: String) {
+        store.edit { it[UPDATE_DISMISSED] = version }
+    }
+
+    /**
      * 1.2.0: cached Donghua slug pool (comma-joined). The Anime tab uses
      * it to exclude donghua series Cobe also carries; a warm cache keeps
      * the exclusion active while a fresh pool loads in the background.
@@ -234,6 +262,8 @@ class SettingsStore(context: Context) {
         val COBE_API_HOST = stringPreferencesKey("cobe_api_host")
         val MANHWA_INDEX = stringPreferencesKey("manhwa_index_json")
         val MANHWA_INDEX_AT = stringPreferencesKey("manhwa_index_built_at")
+        val MANHWA_INDEX_ATTEMPT = stringPreferencesKey("manhwa_index_last_failed_attempt")
+        val UPDATE_DISMISSED = stringPreferencesKey("update_dismissed_version")
         val DONGHUA_SLUGS = stringPreferencesKey("donghua_slug_pool")
         val ANIME_GENRE_CACHE = stringPreferencesKey("anime_genre_cache_json")
         val ANIME_COUNTRY_POOLS = stringPreferencesKey("anime_country_pools_json")

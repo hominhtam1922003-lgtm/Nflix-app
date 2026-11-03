@@ -57,7 +57,7 @@ private val BadgeShape = RoundedCornerShape(6.dp)
 private val CardShape = RoundedCornerShape(14.dp)
 
 /**
- * Image with a fallback chain: some KKPhim poster files fail
+ * Image with a fallback chain: some source poster files fail
  * to load on-device while the sibling thumb works — try primary, then the
  * fallback URL, so a card never sits blank when either image is alive.
  * C4 (K5): when BOTH urls fail the frame no longer stays an anonymous grey

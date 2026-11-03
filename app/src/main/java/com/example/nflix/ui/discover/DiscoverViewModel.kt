@@ -33,7 +33,8 @@ class DiscoverViewModel(private val app: NflixApp) : ViewModel() {
         }
         viewModelScope.launch {
             try {
-                val completed = app.kkPhim.listByKind("phim-le", page = 1, limit = 12)
+                // 1.3.4: Cobe serves this shelf now (KKPhim dropped).
+                val completed = app.mergedPhim.byKindMerged("phim-le", page = 1, limit = 12)
                 app.database.titleDao().upsertAll(completed.map { it.toEntity() })
                 _state.update { it.copy(completed = completed) }
             } catch (e: Exception) { /* section stays hidden */ }

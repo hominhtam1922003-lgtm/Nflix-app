@@ -4,7 +4,6 @@ import com.example.nflix.data.model.Family
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.source.CobeSource
 import com.example.nflix.data.source.HhKungfuSource
-import com.example.nflix.data.source.KkPhimSource
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -40,7 +39,6 @@ import java.util.concurrent.ConcurrentHashMap
  * appears once the harvest lands, never the other way around.
  */
 class AnimeCatalog(
-    private val kkPhim: KkPhimSource,
     private val cobe: CobeSource,
     private val hhKungfu: HhKungfuSource,
     private val settings: SettingsStore
@@ -411,15 +409,18 @@ class AnimeCatalog(
     }
 
     // ------------------------------------------------------------------
-    // KKPhim poster fallback (country-law fix, 2026-11-01): some Cobe
-    // covers are dead AT THE SOURCE — naruto-shippuden's poster and
-    // thumb 404 in the listing payload, in the by-slug record and on
-    // Cobe's own site — while the KKPhim record under the same slug has
-    // a live poster (measured 200). Same enrichment pattern as genres:
-    // background, bounded parallel, persistent per-slug cache, failures
-    // not cached. The fallback only ever fills TitleItem's
-    // posterFallbackUrl — the item's own Cobe art stays primary and is
-    // tried first by the display chain, always.
+    // Poster fallback (country-law fix, 2026-11-01): some Cobe covers
+    // are dead AT THE SOURCE — naruto-shippuden's poster and thumb
+    // 404 in the listing payload, in the by-slug record and on Cobe's
+    // own site. Until 1.3.3 the fallback cover was fetched from the
+    // KKPhim record under the same slug into a persistent per-slug
+    // cache. 1.3.4: KKPhim is GONE (user order) — the fetcher is
+    // removed; covers already sitting in the persisted cache still
+    // apply (they are plain image URLs the app stored earlier), but
+    // no new lookup ever happens. A Cobe cover dead at the source now
+    // simply shows the placeholder — the honest price of Cobe-only.
+    // The fallback only ever fills TitleItem's posterFallbackUrl —
+    // the item's own Cobe art stays primary, always.
     // ------------------------------------------------------------------
 
     private val posterCache = ConcurrentHashMap<String, String>()
@@ -459,56 +460,24 @@ class AnimeCatalog(
         }
     }
 
-    /** Pool records still owed a KK poster lookup (drives re-kicks). */
-    fun hasUnattemptedPoster(items: List<TitleItem>): Boolean =
-        items.any {
-            it.sourceId == CobeSource.SOURCE_ID &&
-                !posterCache.containsKey(it.slug) && it.slug !in posterAttempted
-        }
+    /** 1.3.4: no poster lookups remain — the enrichment loop must not spin. */
+    fun hasUnattemptedPoster(items: List<TitleItem>): Boolean = false
 
     /**
-     * One poster-fallback pass over [items]: for every Cobe record not
-     * yet cached/attempted, look the same slug up on KKPhim and keep
-     * its poster URL. Returns true when the cache gained entries.
+     * 1.3.4: the KK poster fetcher is gone with its source. The pass
+     * only warms the persisted cache into memory now and never gains
+     * entries, so it always reports "no change".
      */
     suspend fun enrichPosterFallbacks(items: List<TitleItem>): Boolean {
         ensurePosterCacheLoaded()
-        val todo = items.asSequence()
-            .filter { it.sourceId == CobeSource.SOURCE_ID }
-            .map { it.slug }
-            .distinct()
-            .filter { !posterCache.containsKey(it) && it !in posterAttempted }
-            .toList()
-        if (todo.isEmpty()) return false
-        posterAttempted.addAll(todo)
-        val semaphore = Semaphore(POSTER_LOOKUP_PARALLEL)
-        val results = coroutineScope {
-            todo.map { slug ->
-                async {
-                    semaphore.withPermit {
-                        val url = runCatching { kkPhim.detail(slug) }.getOrNull()
-                            ?.let { d -> d.item.posterUrl.ifBlank { d.item.thumbUrl } }
-                            ?.takeIf { it.isNotBlank() }
-                        if (url != null) {
-                            posterCache[slug] = url
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
-            }.awaitAll()
-        }
-        val changed = results.any { it }
-        if (changed) persistPosterCache()
-        return changed
+        return false
     }
 
-    /** The cached KK poster URL for a Cobe item ("" when none known). */
+    /** The cached fallback poster URL for a Cobe item ("" when none known). */
     fun posterFallbackOf(item: TitleItem): String =
         if (item.sourceId == CobeSource.SOURCE_ID) posterCache[item.slug].orEmpty() else ""
 
-    /** Attach the cached KK poster as the item's last-resort cover. */
+    /** Attach the cached fallback poster as the item's last-resort cover. */
     fun withPosterFallback(item: TitleItem): TitleItem {
         val fb = posterFallbackOf(item)
         return if (fb.isBlank() || fb == item.posterUrl || item.posterFallbackUrl == fb) {
@@ -519,16 +488,12 @@ class AnimeCatalog(
     }
 
     /**
-     * withPosterFallback for a single foreground item (Detail): loads
-     * the cache and, on a miss, performs that one title's KK lookup
-     * inline — at most once per title per process run.
+     * withPosterFallback for a single foreground item (Detail): cache
+     * only since 1.3.4 — a miss stays a miss (no KK lookup exists).
      */
     suspend fun withPosterFallbackLoaded(item: TitleItem): TitleItem {
         if (item.sourceId != CobeSource.SOURCE_ID) return item
         ensurePosterCacheLoaded()
-        if (posterCache.containsKey(item.slug)) return withPosterFallback(item)
-        if (item.slug in posterAttempted) return item
-        enrichPosterFallbacks(listOf(item))
         return withPosterFallback(item)
     }
 

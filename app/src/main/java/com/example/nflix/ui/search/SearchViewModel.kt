@@ -36,6 +36,8 @@ data class SearchUiState(
      * 1.3.3: Cobe left the search pool together with every other
      * Phim path (user order 09:42) — it only ever contributed
      * Family.PHIM items, and KKPhim search covers that catalog.
+     * 1.3.4: REVERSED again (user order 11:39) — Phim is Cobe-only,
+     * KKPhim is gone from the app, and search below calls Cobe.
      */
     val failedSources: Int = 0
 )
@@ -100,13 +102,14 @@ class SearchViewModel(private val app: NflixApp) : ViewModel() {
                 emptyList()
             }
         val deferred = listOf(
-            async { counted { app.kkPhim.search(query) } },
+            // 1.3.4: Phim search is Cobe's (KKPhim dropped by user order).
+            async { counted { app.cobe.search(query) } },
             async { counted { app.hhKungfu.search(query) } },
             async { counted { app.netTruyen.search(query) } },
             async { counted { app.truyenQq.search(query) } }
         )
         // Phim/Anime dedupe by slug (a title can surface under more
-        // than one KKPhim-shaped id); other families keep the exact id.
+        // than one source-shaped id); other families keep the exact id.
         val merged = deferred.awaitAll().flatten().distinctBy { item ->
             if (item.family == Family.PHIM || item.family == Family.ANIME) {
                 "slug:${item.slug}"
