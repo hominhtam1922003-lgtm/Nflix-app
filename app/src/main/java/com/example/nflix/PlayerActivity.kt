@@ -241,6 +241,11 @@ private fun PlayerScreen(
     // belongs to, and which server indices it already burned.
     var autoSwitchEpisode by remember { mutableStateOf<String?>(null) }
     var triedServers by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    // 1.3.12 fix1: Media3 1.4 has no ExoPlayer.addTextOutput —
+    // cues reach the screen-anchored overlay below through
+    // Player.Listener.onCues, the same channel PlayerView itself
+    // uses to feed its own subtitle view.
+    var subtitleOverlay by remember { mutableStateOf<SubtitleView?>(null) }
 
     fun applyQualityCap(cap: Int) {
         qualityCap = cap
@@ -432,6 +437,14 @@ private fun PlayerScreen(
                 heights = found.toList()
                 autoSelectTextTrack(tracks)
             }
+
+            override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+                // 1.3.12 fix1: feed the detached overlay (see
+                // subtitleOverlay above) — the text is rendered
+                // against the screen, never inside the video
+                // frame, so Lấp đầy cropping cannot cut it.
+                subtitleOverlay?.setCues(cueGroup.cues)
+            }
         }
         exo.addListener(listener)
         onDispose {
@@ -535,15 +548,11 @@ private fun PlayerScreen(
             factory = { ctx ->
                 SubtitleView(ctx).apply {
                     setBottomPaddingFraction(0.10f)
-                    exo.addTextOutput(this)
+                    subtitleOverlay = this
                 }
             },
-            onRelease = { view ->
-                try {
-                    exo.removeTextOutput(view)
-                } catch (e: Exception) {
-                    // player already released — nothing to undo
-                }
+            onRelease = {
+                subtitleOverlay = null
             },
             modifier = Modifier.fillMaxSize()
         )
