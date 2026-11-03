@@ -68,6 +68,7 @@ import androidx.media3.ui.PlayerView
 import com.example.nflix.data.AdBlock
 import com.example.nflix.data.AdCutPlaylistParserFactory
 import com.example.nflix.data.AppSettings
+import com.example.nflix.data.SettingsStore
 import com.example.nflix.player.PlaybackKind
 import com.example.nflix.player.PlayerUiState
 import com.example.nflix.player.PlayerViewModel
@@ -754,6 +755,13 @@ private fun PlayerScreen(
     if (showResize) {
         ResizeSheet(
             current = settings.playerResize,
+            onPick = { mode ->
+                // 1.3.10: written on the SCREEN's scope, which
+                // outlives the sheet — see ResizeSheet's note.
+                playerScope.launch {
+                    app.settings.setString(SettingsStore.PLAYER_RESIZE, mode)
+                }
+            },
             onDismiss = { showResize = false }
         )
     }

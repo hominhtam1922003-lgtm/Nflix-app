@@ -797,13 +797,19 @@ internal fun QuickSettingsSheet(
 @Composable
 internal fun ResizeSheet(
     current: String,
+    onPick: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
-    val app = context.applicationContext as NflixApp
-    val scope = rememberCoroutineScope()
+    // 1.3.10: the pick is reported to the HOST (PlayerActivity),
+    // which writes the setting on the player screen's scope. The
+    // 1.3.8/1.3.9 version launched the DataStore write on THIS
+    // sheet's own rememberCoroutineScope and dismissed immediately —
+    // disposing the sheet cancelled the scope mid-write, so picks
+    // kept losing the race and the stored mode stayed whatever it
+    // already was (user verdict 1.3.9: the picker "keeps defaulting
+    // to Kéo giãn" no matter what he chose).
     fun pick(mode: String) {
-        scope.launch { app.settings.setString(SettingsStore.PLAYER_RESIZE, mode) }
+        onPick(mode)
         onDismiss()
     }
     // 1.3.9: same reachability guard as QuickSettingsSheet — fully
