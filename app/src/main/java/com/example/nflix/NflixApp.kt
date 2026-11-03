@@ -12,7 +12,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.example.nflix.data.SettingsStore
 import com.example.nflix.data.local.NflixDatabase
-import com.example.nflix.data.source.CobeSource
+import com.example.nflix.data.source.PhimCobeSource
 import com.example.nflix.data.source.HhKungfuSource
 import com.example.nflix.data.source.MergedPhimSource
 import com.example.nflix.data.source.NetTruyenSource
@@ -36,7 +36,7 @@ class NflixApp : Application(), ImageLoaderFactory {
             .build()
     }
 
-    val cobe: CobeSource by lazy { CobeSource(settings = settings) }
+    val phimcobe: PhimCobeSource by lazy { PhimCobeSource() }
 
     /**
      * V2 (A6): the video cache shared by the player (write-through
@@ -55,12 +55,12 @@ class NflixApp : Application(), ImageLoaderFactory {
         )
     }
 
-    /** Phim/Anime routing front — Cobe-only since 1.3.4 (KK dropped by user order). */
-    val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(cobe) }
+    /** Phim/Anime routing front — PhimCobe since 1.3.5 (Cobe + KK dropped by user order). */
+    val mergedPhim: MergedPhimSource by lazy { MergedPhimSource(phimcobe) }
 
     /** 1.2.0: Anime tab catalog rules over the Cobe animation pool. */
     val animeCatalog: com.example.nflix.data.AnimeCatalog by lazy {
-        com.example.nflix.data.AnimeCatalog(cobe, hhKungfu, settings)
+        com.example.nflix.data.AnimeCatalog(phimcobe, hhKungfu, settings)
     }
     val truyenQq: TruyenQqSource by lazy { TruyenQqSource() }
     val hhKungfu: HhKungfuSource by lazy { HhKungfuSource() }

@@ -103,7 +103,7 @@ class SearchViewModel(private val app: NflixApp) : ViewModel() {
             }
         val deferred = listOf(
             // 1.3.4: Phim search is Cobe's (KKPhim dropped by user order).
-            async { counted { app.cobe.search(query) } },
+            async { counted { app.phimcobe.search(query) } },
             async { counted { app.hhKungfu.search(query) } },
             async { counted { app.netTruyen.search(query) } },
             async { counted { app.truyenQq.search(query) } }

@@ -14,8 +14,8 @@ import com.example.nflix.data.ServerStatus
 import com.example.nflix.data.model.ServerGroup
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
-import com.example.nflix.data.source.CobePlay
-import com.example.nflix.data.source.CobeSource
+import com.example.nflix.data.source.PhimCobePlay
+import com.example.nflix.data.source.PhimCobeSource
 import com.example.nflix.data.source.NetTruyenSource
 import com.example.nflix.data.toEntity
 import kotlinx.coroutines.CancellationException
@@ -361,14 +361,14 @@ class DetailViewModel(
      * used to beat real streams while its stream inside was dead).
      */
     private suspend fun probeTarget(ep: EpisodeItem): ProbeTarget =
-        if (CobeSource.isLocator(ep.slug)) {
+        if (PhimCobeSource.isLocator(ep.slug)) {
             // Đợt 4: a cobe server is probed through its resolved play
             // link — HLS targets are timed for real, embeds are not timed
             // at all anymore (N3).
             try {
-                when (val target = app.cobe.resolvePlay(ep.slug)) {
-                    is CobePlay.Hls -> ProbeTarget.Stream(target.url)
-                    is CobePlay.Embed -> ProbeTarget.Embed(target.url)
+                when (val target = app.phimcobe.resolvePlay(ep.slug)) {
+                    is PhimCobePlay.Hls -> ProbeTarget.Stream(target.url)
+                    is PhimCobePlay.Embed -> ProbeTarget.Embed(target.url)
                 }
             } catch (e: Exception) {
                 ep.embedUrl.takeIf { it.isNotBlank() }
@@ -417,7 +417,7 @@ class DetailViewModel(
                     ?: return emptyList()
                 // 1.3.4: Cobe's own genre listing serves the shelf
                 // (KK dropped); genreLinks carry Cobe slugs now.
-                app.cobe.categoryPage(slug, page = 1, kind = "").first
+                app.phimcobe.categoryPage(slug, page = 1, kind = "").first
             }
             Family.ANIME -> {
                 // 1.2.0 (Khối B): related anime comes from the Cobe pool

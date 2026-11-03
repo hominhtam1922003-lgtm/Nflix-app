@@ -12,8 +12,8 @@ import com.example.nflix.data.local.watchedSet
 import com.example.nflix.data.local.withWatched
 import com.example.nflix.data.model.EpisodeItem
 import com.example.nflix.data.model.ServerGroup
-import com.example.nflix.data.source.CobePlay
-import com.example.nflix.data.source.CobeSource
+import com.example.nflix.data.source.PhimCobePlay
+import com.example.nflix.data.source.PhimCobeSource
 import com.example.nflix.data.model.TitleDetail
 import com.example.nflix.data.model.TitleItem
 import com.example.nflix.data.toEntity
@@ -200,14 +200,14 @@ class PlayerViewModel(
                         detail.servers, episode.number
                     ) { ep ->
                         when {
-                            CobeSource.isLocator(ep.slug) ->
+                            PhimCobeSource.isLocator(ep.slug) ->
                                 try {
                                     when (
-                                        val target = app.cobe.resolvePlay(ep.slug)
+                                        val target = app.phimcobe.resolvePlay(ep.slug)
                                     ) {
-                                        is CobePlay.Hls ->
+                                        is PhimCobePlay.Hls ->
                                             ProbeTarget.Stream(target.url)
-                                        is CobePlay.Embed ->
+                                        is PhimCobePlay.Embed ->
                                             ProbeTarget.Embed(target.url)
                                     }
                                 } catch (e: Exception) {
@@ -249,10 +249,10 @@ class PlayerViewModel(
             // like any direct stream (the episode keeps its API embed
             // URL, so "Xem bằng web" still works after an HLS failure);
             // other links go to the embed surface.
-            CobeSource.isLocator(episode.slug) -> {
+            PhimCobeSource.isLocator(episode.slug) -> {
                 try {
-                    when (val target = app.cobe.resolvePlay(episode.slug)) {
-                        is CobePlay.Hls -> _state.update {
+                    when (val target = app.phimcobe.resolvePlay(episode.slug)) {
+                        is PhimCobePlay.Hls -> _state.update {
                             it.copy(
                                 loading = false,
                                 episode = episode.copy(streamUrl = target.url),
@@ -263,7 +263,7 @@ class PlayerViewModel(
                                 adCutSeconds = 0
                             )
                         }
-                        is CobePlay.Embed -> _state.update {
+                        is PhimCobePlay.Embed -> _state.update {
                             it.copy(
                                 loading = false,
                                 episode = episode.copy(embedUrl = target.url),
@@ -289,7 +289,7 @@ class PlayerViewModel(
                             it.copy(
                                 loading = false,
                                 episode = episode,
-                                error = "Không lấy được link phát từ server Cobe."
+                                error = "Không lấy được link phát từ server PhimCobe."
                             )
                         }
                     }
@@ -362,11 +362,11 @@ class PlayerViewModel(
         group: ServerGroup,
         episode: EpisodeItem
     ): ResolvedPlay? = when {
-        CobeSource.isLocator(episode.slug) -> try {
-            when (val target = app.cobe.resolvePlay(episode.slug)) {
-                is CobePlay.Hls ->
+        PhimCobeSource.isLocator(episode.slug) -> try {
+            when (val target = app.phimcobe.resolvePlay(episode.slug)) {
+                is PhimCobePlay.Hls ->
                     ResolvedPlay(groupIndex, episode, PlaybackKind.STREAM, target.url)
-                is CobePlay.Embed ->
+                is PhimCobePlay.Embed ->
                     ResolvedPlay(groupIndex, episode, PlaybackKind.EMBED, target.url)
             }
         } catch (e: Exception) {
@@ -689,8 +689,8 @@ class PlayerViewModel(
         if (!prefetchAttempted.add(next.slug)) return
         viewModelScope.launch {
             val url = when {
-                CobeSource.isLocator(next.slug) -> try {
-                    (app.cobe.resolvePlay(next.slug) as? CobePlay.Hls)?.url
+                PhimCobeSource.isLocator(next.slug) -> try {
+                    (app.phimcobe.resolvePlay(next.slug) as? PhimCobePlay.Hls)?.url
                 } catch (e: Exception) {
                     null
                 }

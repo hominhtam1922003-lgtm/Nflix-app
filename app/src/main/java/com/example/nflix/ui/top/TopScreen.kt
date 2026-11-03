@@ -131,7 +131,7 @@ class TopViewModel(private val app: NflixApp) : ViewModel() {
                         // gate cannot starve the top-10.
                         app.animeCatalog.warmDonghuaSlugs()
                         app.animeCatalog.ensureCountryPoolsLoaded()
-                        val chart = app.cobe.searchByViews(
+                        val chart = app.phimcobe.searchByViews(
                             weekly = period == 1, limit = 24,
                             family = Family.ANIME, animeOnly = true
                         )
@@ -272,15 +272,12 @@ fun TopScreen(onOpenTitle: (TitleItem) -> Unit) {
                 onSelect = { viewModel.selectPeriod(it) }
             )
         } else if (family == Family.ANIME) {
-            // V2 (A2, sheet frame 2): segmented Hôm nay | Tuần over the
-            // real Cobe view chart; the note states the chart's scope.
-            FilterChips(
-                labels = listOf("Hôm nay", "Tuần"),
-                selectedIndex = state.period.coerceIn(0, 1),
-                onSelect = { viewModel.selectPeriod(it) }
-            )
+            // 1.3.5: the source (phimcobe.com) publishes ONE view
+            // chart with real counters and no day/week split — the
+            // old Hôm nay | Tuần toggle would be a fake distinction
+            // over identical data, so only the scope note remains.
             Text(
-                "Lượt xem thật · Cobe",
+                "Bảng xếp hạng lượt xem · PhimCobe",
                 color = NflixTextMuted,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp)

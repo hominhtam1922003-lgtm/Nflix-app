@@ -30,20 +30,22 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 /**
- * Phim-tab filter: kind + category + year + status + version. Empty/0 = all.
- * 1.3.4: the country facet is GONE — Cobe records carry no country
- * field, so no honest country filter exists on the Cobe-only catalog.
+ * Phim-tab filter: kind + category + country + year + status +
+ * version. Empty/0 = all. 1.3.5: the country facet is BACK — PhimCobe
+ * records carry countries (Cobe's never did, which is why 1.3.4 cut
+ * the facet); it is served by the source's /quoc-gia listings.
  */
 data class PhimFilter(
     val kind: String = "phim-bo",
     val category: String = "",
+    val country: String = "",
     val year: Int = 0,
     val status: Int = 0,
     /** V2 (A1): PHIÊN BẢN key (VersionFilter) — filtered LOCALLY. */
     val version: String = ""
 ) {
     val isDefault: Boolean
-        get() = kind == "phim-bo" && category.isEmpty() &&
+        get() = kind == "phim-bo" && category.isEmpty() && country.isEmpty() &&
             year == 0 && status == 0 && version.isEmpty()
 }
 
@@ -854,11 +856,11 @@ class FamilyViewModel(
     }
 
     private suspend fun fetchPhimRaw(filter: PhimFilter, page: Int): List<TitleItem> =
-        // 1.3.4: every Phim browse goes through the Cobe-only front —
-        // the KK cinema special case died with its source.
+        // 1.3.5: every Phim browse goes through the PhimCobe front.
         app.mergedPhim.filteredMerged(
             kind = filter.kind,
             category = filter.category,
+            country = filter.country,
             year = filter.year,
             status = filter.status,
             page = page

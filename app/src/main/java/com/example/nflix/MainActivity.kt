@@ -182,10 +182,6 @@ private fun NflixShell() {
     var selected by remember { mutableIntStateOf(0) }
     var familyRoute by remember { mutableStateOf<Family?>(null) }
     var detailItem by remember { mutableStateOf<TitleItem?>(null) }
-    /** V2 (A5): the actor page stacked above detail. */
-    var actorRoute by remember {
-        mutableStateOf<com.example.nflix.data.model.ActorRef?>(null)
-    }
     var readerRequest by remember { mutableStateOf<Pair<TitleItem, ChapterItem>?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -301,17 +297,6 @@ private fun NflixShell() {
             )
             return
         }
-        actorRoute != null -> {
-            // V2 (A5): actor page above detail — back pops the actor
-            // layer only, returning to the title it came from.
-            BackHandler { actorRoute = null }
-            com.example.nflix.ui.detail.ActorScreen(
-                actor = actorRoute!!,
-                onBack = { actorRoute = null },
-                onOpenTitle = openTitle
-            )
-            return
-        }
         detailItem != null -> {
             BackHandler { detailItem = null }
             DetailScreen(
@@ -319,8 +304,11 @@ private fun NflixShell() {
                 onBack = { detailItem = null },
                 onPlay = playVideo,
                 onRead = readChapter,
-                onOpenTitle = openTitle,
-                onOpenActor = { actorRoute = it }
+                onOpenTitle = openTitle
+                // 1.3.5: no onOpenActor — the PhimCobe source has no
+                // actor pages (measured 404), so Detail never offers
+                // a tappable actor (its refs are empty by construction
+                // and cast renders as plain text).
             )
             return
         }

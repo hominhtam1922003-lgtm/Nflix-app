@@ -259,7 +259,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 // 1.3.4: Phim AND Anime genre links both come from
                 // Cobe (KK dropped by user order); a legacy "kkphim"
                 // item re-homes by slug, exactly like detailFor.
-                "kkphim", "cobe" -> nflix.cobe.detail(item.slug, item.family).genreLinks
+                "kkphim", "cobe" -> nflix.phimcobe.detail(item.slug, item.family).genreLinks
                 "hhkungfu" -> nflix.hhKungfu.detail(item.slug).genreLinks
                 "nettruyen" -> nflix.netTruyen.detail(item.slug).genreLinks
                 "truyenqq" -> nflix.truyenQq.detail(item.slug, item.family).genreLinks
@@ -278,7 +278,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         when (sourceId) {
             // 1.3.4: Cobe genre links carry Cobe's own slugs — the
             // shelf is Cobe's /the-loai listing for the same slug.
-            "kkphim", "cobe" -> nflix.cobe.categoryPage(slug, page = 1, kind = "", family = family)
+            "kkphim", "cobe" -> nflix.phimcobe.categoryPage(slug, page = 1, kind = "", family = family)
                 .first.take(24)
             "hhkungfu" -> nflix.hhKungfu.byCategory(slug, page = 1)
             "nettruyen" -> nflix.netTruyen.byGenre(slug, page = 1)

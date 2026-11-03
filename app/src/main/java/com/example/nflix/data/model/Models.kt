@@ -70,7 +70,16 @@ data class TitleItem(
     val updatedEpochSec: Long = 0,  // for "x phút trước"
     val updatedLabel: String = "",  // pre-formatted relative time text from the source, when it gives text
     val isHot: Boolean = false,
-    val isNew: Boolean = false
+    val isNew: Boolean = false,
+    /**
+     * 1.3.5: country slugs of the record ("nhat-ban", "han-quoc", ...)
+     * when the source publishes them — PhimCobe records do; Cobe
+     * records never did, which is why the Anime country gate used to
+     * need harvested slug pools. Empty = the source said nothing.
+     */
+    val countrySlugs: List<String> = emptyList(),
+    /** 1.3.5: the source's own animation flag (PhimCobe's `isAnime`). */
+    val isAnime: Boolean = false
 )
 
 data class EpisodeItem(

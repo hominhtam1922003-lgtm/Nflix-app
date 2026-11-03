@@ -9,9 +9,9 @@ import com.example.nflix.data.model.TitleItem
  *  - NetTruyen: <base>/truyen-tranh/<slug>
  *  - TruyenQQ:  <host>/<slug> (primary host; the twin host serves the same path)
  *  - HhKungfu:  <base>/<slug>
- *  - Cobe:      <base>/phim/<slug> (1.3.4 — legacy KKPhim items share
- *    the same URL: they re-home onto Cobe by slug, and KKPhim itself
- *    never had a public title page to link to.)
+ *  - PhimCobe:  <base>/phim/<slug> (1.3.5 — items saved under the
+ *    retired "cobe"/"kkphim" ids share this URL: they re-home onto
+ *    PhimCobe by slug.)
  */
 object ShareLinks {
 
@@ -19,7 +19,7 @@ object ShareLinks {
         "nettruyen" -> "https://nettruyen.gg/truyen-tranh/${item.slug}"
         "truyenqq" -> "https://nettruyenqq.org/${item.slug}"
         "hhkungfu" -> "https://hhkungfu.ee/${item.slug}"
-        "cobe", "kkphim" -> "https://cobephim.fun/phim/${item.slug}"
+        "cobe", "kkphim" -> "https://www.phimcobe.com/phim/${item.slug}"
         else -> ""
     }
 
